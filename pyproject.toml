@@ -1,0 +1,19 @@
+[project]
+name = "charmera-re"
+version = "0.1.0"
+description = "GPCV/Generalplus camera firmware reverse engineering workspace"
+requires-python = ">=3.10"
+dependencies = [
+    "capstone>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pillow",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
