@@ -19,12 +19,9 @@ G+_IDE_for_ARM_V1.2.1.zip
 msi_extract/
 
 # Generated upgrade candidate files (regenerate via scripts/build_upgrade_files.py)
-JH_5408.bin
-JH5408_vA.bin
-JH5408_vB.bin
-vC_whole.bin
-vD_body.bin
-vE_after26.bin
+JH_5408*.bin
+JH5408_v*.bin
+v?_*.bin
 
 # Project noise files (empty dev placeholders)
 *.gpr

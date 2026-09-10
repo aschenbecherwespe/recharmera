@@ -1,94 +1,112 @@
 #!/usr/bin/env python3
 """
-Build candidate SD-card upgrade files ("JH_5408*.bin") for the GPCV camera.
+Build a valid SD-card upgrade file for the GPCV/CHARMERA camera.
 
-The camera's SD upgrade mechanism (see REVERSE_ENGINEERING_NOTES.md):
-  * looks for C:\\JH_5408*.bin on the SD card root
-  * check_fn (0x21818): if file[0x19] != "202505201029" -> "update available"
-                        if file[0x19] == "202505201029" -> "already current" (file IGNORED)
-  * flasher (0x21370):  parses an 8-hex-char byte-sum expected value from the
-                        header, opens the file, sums all bytes, and aborts
-                        (before writing) on mismatch.  On success it writes the
-                        whole file 1:1 to SPI flash in 0x400-byte sectors.
+Wire format (confirmed on hardware; see REVERSE_ENGINEERING_NOTES.md section 3)
+-----------------------------------------------------------------------------
+The updater carries its metadata in the *SD filename*, not in the file:
 
-So a working upgrade file is (current model):
-  [0x19..0x25] 12-byte version  -> MUST DIFFER from the installed "202505201029"
-  [0x26..0x2E]  8 hex chars    -> expected byte-sum (coverage still being tested)
-  [0x2E..]      raw flash image content
+    C:\\JH_5408*.bin              <- find-first pattern (card root, .bin suffix)
+    JH_5408<VER12><X><CK8>.bin    <- fname[0:7] / [7:19] / [19] / [20:28] / [28:]
+
+      fname[7:19]  VER12  12-char version, memcmp'd against the installed
+                          "202505201029" (flash 0x218C4).  Must DIFFER to
+                          trigger the upgrade; equal = file ignored.
+      fname[19]    X      free separator char (never read by the updater)
+      fname[20:28] CK8    8 ASCII hex chars = whole-file byte sum mod 2^32
+
+IMAGE SIZE IS LOAD-BEARING
+--------------------------
+After the last data sector the flasher erases one extra sector at
+`image_size + 0x10000` (instruction 0x217B4).  A NOR chip decodes an address
+modulo its capacity, so an address past the end of the 2 MiB part does NOT
+no-op - it destroys a sector near the *start* of the flash.  A full-size
+2 MiB dump puts that erase at 0x210000 -> 0x210000 % 0x200000 = 0x010000,
+which bricks the camera.  Hence images are truncated to
+
+    MAX_IMAGE = 0x200000 - 2 * 0x10000 = 0x1E0000
+
+(the trailing erase then lands at 0x1F0000, inside the chip).  Everything the
+truncation drops is 0xFF in the stock dump, so nothing is lost.
 
 Usage:
-    python3 scripts/build_upgrade_files.py [base.bin]
-Default: base.bin = charmera.bin; writes vC_whole.bin, vD_body.bin, vE_after26.bin
+    python3 scripts/build_upgrade_files.py [dump.bin] [-d DIR] [--version VER12]
+Verify with:
+    .venv/bin/python scripts/emu_updater.py --stage write <out.bin>   # write tail
+    .venv/bin/python scripts/emu_updater.py --stage both  <out.bin>   # both gates
 """
-import hashlib, sys
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from emu_updater import (                                            # noqa: E402
+    MAX_IMAGE, CHIP_SIZE, SECTOR, byte_sum, canonical_name,
+    NAME_PREFIX, NAME_SUFFIX,
+)
 
 BASE = "charmera.bin"
-VERSION_TOKEN = b"202505201029"          # the installed version constant
-# A DIFFERENT version marker (must differ to trigger the upgrade attempt)
-NEW_VERSION = b"100000000000"
+INSTALLED = b"202505201029"           # build stamp compiled into the firmware
+DEFAULT_VERSION = b"202609101200"
+SPII_LEN_OFF = 0x10                   # SPII header field 0x001B0000 (image length)
 
 
-def put_version(d: bytearray, ver: bytes) -> None:
-    d[0x19:0x25] = ver
+def fit_image(raw: bytes) -> tuple[bytes, str]:
+    """Truncate to the largest size whose trailing sector erase stays in range."""
+    if len(raw) <= MAX_IMAGE:
+        return raw, f"already within the 0x{MAX_IMAGE:x} limit"
+    dropped = raw[MAX_IMAGE:]
+    if any(b != 0xFF for b in dropped):
+        raise SystemExit(
+            f"refusing to build: image is {len(raw)} bytes and bytes beyond "
+            f"0x{MAX_IMAGE:x} are not 0xFF, so truncating would lose data")
+    return raw[:MAX_IMAGE], (f"truncated from {len(raw)} to 0x{MAX_IMAGE:x} bytes "
+                             f"(dropped {len(dropped)} trailing 0xFF bytes; the flasher "
+                             f"erases that region anyway)")
 
 
-def whole_file_sum(d: bytearray) -> int:
-    return sum(d) & 0xFFFFFFFF
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("base", nargs="?", default=BASE, help=f"source flash image (default {BASE})")
+    ap.add_argument("-d", "--dir", default=".", help="output directory")
+    ap.add_argument("--version", default=DEFAULT_VERSION.decode(),
+                    help=f"12-char version for the filename (must differ from "
+                         f"{INSTALLED.decode()!r})")
+    args = ap.parse_args()
 
+    version = args.version.encode()
+    if len(version) != 12:
+        ap.error(f"--version must be exactly 12 characters, got {len(version)}")
+    if version == INSTALLED:
+        print(f"warning: version {version.decode()!r} equals the installed build - "
+              f"the camera would ignore the file", file=sys.stderr)
 
-def body_sum(d: bytearray) -> int:
-    return sum(d[0x30:]) & 0xFFFFFFFF
+    raw = open(args.base, "rb").read()
+    image, note = fit_image(raw)
+    name = canonical_name(image, version).decode()
+    out = os.path.join(args.dir, name)
+    with open(out, "wb") as f:
+        f.write(image)
 
-
-def after_0x26_sum(d: bytearray) -> int:
-    return sum(d[0x2E:]) & 0xFFFFFFFF
-
-
-def write_checksum(d: bytearray, compute: callable, at: int = 0x26, iters: int = 30) -> None:
-    """Write an 8-char uppercase hex byte-sum at `at`, iterating to a fixed point."""
-    prev = None
-    for _ in range(iters):
-        s = compute(d)
-        d[at:at + 8] = ("%08X" % s).encode()
-        if prev == d[at:at + 8]:
-            break
-        prev = bytes(d[at:at + 8])
-
-
-def save(variant: str, d: bytearray) -> None:
-    fn = f"{variant}.bin"
-    with open(fn, "wb") as f:
-        f.write(bytes(d))
-    print(f"{fn:22s} md5={hashlib.md5(bytes(d)).hexdigest()}"
-          f"  @0x19={bytes(d[0x19:0x25])!r}  @0x26={bytes(d[0x26:0x2E])!r}")
-
-
-def main():
-    base = sys.argv[1] if len(sys.argv) > 1 else BASE
-    data = bytearray(open(base, "rb").read())
-    print(f"base: {base} ({len(data)} bytes)")
-
-    # vC: version differs + whole-file byte-sum
-    d = bytearray(data)
-    put_version(d, NEW_VERSION)
-    write_checksum(d, whole_file_sum)
-    save("vC_whole", d)
-
-    # vD: version differs + body-only (0x30..) byte-sum
-    d = bytearray(data)
-    put_version(d, NEW_VERSION)
-    write_checksum(d, body_sum)
-    save("vD_body", d)
-
-    # vE: version differs + sum of bytes after the checksum field (0x2E..)
-    d = bytearray(data)
-    put_version(d, NEW_VERSION)
-    write_checksum(d, after_0x26_sum)
-    save("vE_after26", d)
-
-    print("\nTo test: format SD card FAT32 (<=32GB), copy one of these to the root")
-    print("as 'JH_5408.bin' exactly (root, not in a folder), boot the camera.")
+    checksum = byte_sum(image)
+    print(f"{out}")
+    print(f"  image    : {len(image)} bytes (0x{len(image):x}) from {args.base} - {note}")
+    print(f"  name     : {name}  ({len(name)} chars)")
+    print(f"             {NAME_PREFIX.decode()}|{version.decode()}|"
+          f"{name[19]}|{checksum:08X}|{NAME_SUFFIX.decode()}")
+    print(f"  version  : {version.decode()} (differs from installed {INSTALLED.decode()}"
+          f" -> update triggers)")
+    print(f"  checksum : {checksum:08X} = sum(image) mod 2^32")
+    print(f"  write tail: image + 0x{SECTOR:x} = 0x{len(image) + SECTOR:x} sector erase, "
+          f"ends at 0x{len(image) + 2 * SECTOR:x} <= chip 0x{CHIP_SIZE:x} "
+          f"{'OK' if len(image) + 2 * SECTOR <= CHIP_SIZE else 'OUT OF RANGE - DO NOT FLASH'}")
+    if len(raw) > SPII_LEN_OFF + 4:
+        declared = int.from_bytes(raw[SPII_LEN_OFF:SPII_LEN_OFF + 4], "little")
+        print(f"  SPII len : header declares 0x{declared:x} (informational)")
+    print(f"\nCopy '{name}' to the ROOT of a FAT32 SD card (do not rename it), then boot.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
