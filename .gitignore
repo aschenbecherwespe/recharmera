@@ -23,6 +23,9 @@ JH_5408*.bin
 JH5408_v*.bin
 v?_*.bin
 
+# Carved JPEG output (regenerate via scripts/carve_jpegs.py)
+carved/
+
 # Project noise files (empty dev placeholders)
 *.gpr
 *.rep/

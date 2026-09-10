@@ -31,11 +31,12 @@ The bundled `charmera.bin.png` (2048×1228) is a *user-created analysis artifact
 | `0x000200` | ARM reset vector (`ldr pc,[pc,#0x18]`), boot stub |
 | `0x000200` – `0x0F5XXX` | Core firmware code (RTOS, lwIP, WiFi, camera app), runs **XIP from flash (address 0)** |
 | `0x0F6000`+ | Code/data continues (string table areas, font/geom tables) |
-| `0x10C000` – `0x11F000` | all-zeros gap |
-| `0x120000` | **`GP+` UI resource filesystem** (name→ID index + sector-aligned asset data) |
-| `0x120600`+ | GPZP-compressed UI images / JPG / WAV assets (42 files extracted to `assets/`) |
-| `0x180000` | large standalone JPEG (boot logo, Generalplus `GPEncoder`, EXIF model `CBB3`) |
-| `0x186000` – end | mostly `0xFF` (unused flash) |
+| `0x100000` – `0x10B12C` | Encoder/parser tables + 4 header-only `GPEncoder` JPEG stubs (§9) |
+| `0x10B12D` – `0x11FFFF` | zero-filled (0x00) — *not* erased flash, so a real write happened here |
+| `0x120000` | **`GP+` UI resource filesystem** (name→ID index + sector-aligned asset data, §9.4) |
+| `0x120600` – `0x17F1FF` | GPZP-compressed UI images / JPG / WAV assets (42 files extracted to `assets/`) |
+| `0x180000` – `0x185EFF` | **stored 960×720 photo** (GPEncoder JPEG, camera-written EXIF; §9.1) |
+| `0x186000` – end | erased `0xFF` — internal photo area, currently holds only that one image |
 
 ### Boot behavior (verified by disassembly)
 - Boot stub (`0x200`–`0x800`): register setup (`0xD0100038`, `0xD03000xx`, `0xD05001fc`, `0xD07023c0`), zero-fills RAM `0x10AF30` (len `0xA3820`).
@@ -231,7 +232,9 @@ program a corrupted header region into flash.
 - `assets/` — 42 extracted files from the `GP+` UI filesystem (`0x120000`):
   - 35 `.gpzp` (Generplus-compressed images — need GPZP codec to view/edit)
   - 5 `.wav` (valid PCM: `BEEP`, `CLICK`, `IMG`, `POWERON_AUDIO`, `POWEROFF_AUDIO`)
-  - 3 `.jpg` (valid: `AUDIO_REC_BG`, `POWER_ON_LOGO`, plus large `standalone_0180000_large_jpg_180000.jpg`)
+  - 3 `.jpg` (valid: `AUDIO_REC_BG` @`0x120800`, `POWER_ON_LOGO` @`0x161600` = the Kodak logo;
+    `standalone_0180000_large_jpg_180000.jpg` @`0x180000` is **not** a UI asset but a stored
+    960×720 **photo** — see §9)
 - G+ IDE (564 MB MSI / zip present in folder) extracted to `msi_extract/`:
   - `GPDevFWUpdater.dll` — USB ISP/MSDC production flasher (NOT the SD format)
   - `GImagePreviewer.exe` — GPZP image previewer/encoder (unformatted image support)
@@ -318,4 +321,73 @@ runtime-patched region; unresolved.
 
 ---
 
-*Last updated: 2026-09 (emulator session)*
+## 9. Images in the dump — `scripts/carve_jpegs.py`
+
+Carving every `FF D8 FF` in `charmera.bin` gives **3 complete JPEGs and 4 header-only
+stubs** (which contain no pixels and must not be mistaken for photos):
+
+| Offset | Kind | Size | What it is |
+|---|---|---|---|
+| `0x120800` | complete | 160×80, 4358 B | `GP+` asset `AUDIO_REC_BG` (id 4) |
+| `0x161600` | complete | 160×80, 3532 B | `GP+` asset `POWER_ON_LOGO` (id `0x20B`) — Kodak logo; XMP says Photoshop 23.2, 2021-12-15 |
+| `0x180000` | complete | 960×720, 24227 B | **stored photo**, see §9.1 |
+| `0xffb78`, `0x1079d8`, `0x107c48` | header-only | 640×480, 624 B each | `SOI..SOF0..COM("GPEncoder")..DQT..DHT..SOS` and then non-entropy data |
+| `0x107448` | header-only | 640×480, 1424 B | as above + the stock SDK EXIF (`Generalplus` / `DSC Turnkey` / `20121115` / `2012:01:21 16:24:08`) |
+
+```
+.venv/bin/python scripts/carve_jpegs.py charmera.bin carved
+# -> carved/*.jpg (complete) and carved/partial/*_header_only.jpg
+```
+
+### 9.1 The 960×720 photo at `0x180000`
+- `GPEncoder` JPEG (SOF `0x3C0`×`0x2D0`), EXIF `Make=Generalplus`, `Model=CBB3`,
+  `Software=20150615`, `DateTime=2025:02:23:10:11:18` (three copies: IFD0/ExifIFD/IFD1).
+- The date is **written by the camera, not copied from a template**: the SDK stubs format
+  the same field `2012:01:21 16:24:08` (space before the time), this one is
+  `2025:02:23:10:11:18` (colon) — different producer, so the image is a real capture.
+- Slot geometry: `0x17F1FF` is the last byte of the resource partition (`USB_CONNECT`),
+  `0x17F200`–`0x17FFFF` is erased, the JPEG starts exactly at `0x180000` and ends
+  `0x185EA3`, then 92 bytes of `0x00` padding (to `0x185F00`) and `0xFF` to the end of the
+  chip. One image, no index, no directory entry, nothing else in `0x180000`–`0x200000`.
+- It is *not* referenced by the `GP+` name table (highest id `0x240` → `0x168000`), so it
+  is not a UI asset: it sits in the area after the resource partition.
+- Content: a blurred, over-exposed close-up (pink/red, light source upper right) — an
+  accidental/defocused shot, not artwork.
+
+### 9.2 The camera really can store photos with no SD card
+Both storage back-ends are present as path strings in the code region:
+
+| Path | Offset | Storage |
+|---|---|---|
+| `C:\DCIM\PICT%04d.jpg`, `…\MOVI%04d.avi`, `…\RECR%04d.wav` | `0xf378c`–`0xf37cb` | SD card |
+| `C:\SPIDCIM\SPI%02d.jpg` | `0xf37dc` | internal SPI flash |
+| `SPI_XX.JPG` | `0xf3874` (used from the pool at `0x191e0`) | internal SPI flash |
+
+`SPI_XX.JPG` is followed at `0xf3880` by a `(u16 w, u16 h, char *name)` table
+(320×240 QVGA … 4032×3024 12M — same names as the SD table at `0xf38f0`), i.e. the
+internal path is a first-class capture target, not dead code. The single photo in §9.1 is
+the only thing this dump has in that store.
+
+**No filesystem wrapper is present anywhere in the dump**: no FAT boot sector (`55 AA` at
+`+0x1FE` of any 512-byte boundary), no FAT volume label (`NO NAME`/`MSWIN4.1` occur only
+inside the `f_mkfs` template at `0xfef5f`), and no directory entries (`SPI00`… /`PICT0001`
+do not occur as data). In this state the internal area is a raw JPEG slot, not a
+formatted volume.
+
+### 9.3 The four header-only stubs are not truncated photos
+Each ends at its `SOS` — the 8 bytes after it are the *next* stub's `SOI`, and the data
+between the stubs (encoder tables, `GPLUSPRO`/`12345678` at `0x108530`, quant/huffman
+tables at `0x1093xx`, driver state with `ssv6020` at `0x10ad84`) is ordinary structured
+data, not JPEG entropy. Read them as encoder headers left in the data partition; there is
+no recoverable image in them.
+
+### 9.4 `GP+` index format (measured)
+`0x120000`: `"GP+"`, 0x14-byte header, then 43 entries of 24 bytes —
+`char name[16]` (`NAME` immediately followed by `GPZP`/`JPG`/`WAV`, NUL-padded) + one zero
+`u32` + `u32 id`. Asset data lives at `0x120000 + id*0x200`, sector-aligned, in table
+order. Last entry `USB_CONNECTGPZP` id `0x240` → `0x168000` (its data runs to `0x17F1FF`);
+`GPRSPAK` (id `0x10A` → `0x141400`) is the only blob that is not `GPZP`/`RIFF`/JPEG.
+
+---
+
+*Last updated: 2026-09 (emulator session; §9 JPEG carving added 2026-09-10)*

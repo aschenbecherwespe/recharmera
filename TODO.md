@@ -40,6 +40,12 @@ The camera's SD upgrade (`C:\JH_5408*.bin`) is the only in-field path (no CH341A
       check with `--stage both` **and** `--stage write`, then flash.
 
 ### Open questions
+- Internal photo store (`C:\SPIDCIM\SPI%02d.jpg`, `SPI_XX.JPG`): code confirms the feature,
+  and `charmera.bin` holds exactly one 960×720 capture at `0x180000` (notes §9.1) with the
+  rest of `0x180000`–`0x200000` erased and **no FAT wrapper**. Unresolved: is that slot a
+  factory-leftover photo, or the first write of the internal store? Once the camera is
+  recovered: shoot one photo with **no SD card**, re-dump, and diff `0x180000`–`0x200000`
+  (a second image / an index at `0x186000` would settle it).
 - Unconfirmed on hardware: FAT32 vs exFAT, and the power state in which the updater runs
   (`check_fn` returns 0 when `power_state > 0x1f4`, string "not poweroff").
 - The `0xDECd8..0xDED50` ARM→library veneers do not decode as coherent code in either ISA
@@ -67,6 +73,8 @@ This is the reason for the whole project — editing what the camera does.
       **and** its canonical name; computes the whole-file byte sum).
 - [x] `scripts/emu_updater.py` — Unicorn harness: runs `check_fn` + `flasher` offline and
       reports both gates; reproduces every logged hardware result.
+- [x] `scripts/carve_jpegs.py` — carves every JPEG in a dump and separates *complete*
+      frames from *header-only* `GPEncoder` stubs (no pixels). Findings in notes §9.
 - [ ] `scripts/extract_gpz_assets.py` — could add a `--names-only` / manifest output.
 - [ ] Add the GPZP codec disassembly (find encode/decode in the ARM target) — long-term unlock
       for asset modding.
@@ -80,6 +88,8 @@ This is the reason for the whole project — editing what the camera does.
 
 - [x] Firmware analysis / region map (notes).
 - [x] Assets extracted (35 `.gpzp`, 5 `.wav`, 3 `.jpg` + `standalone`).
+- [x] JPEG carve (notes §9): 3 complete JPEGs + 4 header-only stubs; the `0x180000`
+      "standalone boot logo" was a **stored 960×720 photo** — corrected.
 - [x] SD-upgrade path identified, format confirmed, candidates built and emulator-verified.
 - [x] **Refuted** the old "version @file 0x19 / checksum @file 0x26" model — `0x110B94` is a
       FILINFO whose `+0x12` is the filename. `JH5408_v*` / `v[CDE]_*` are dead ends; do not flash.
