@@ -4,7 +4,7 @@ Status page for the firmware-modding project. Companion to `REVERSE_ENGINEERING_
 
 ---
 
-## 1. Active goal: get a valid SD-card upgrade file (solved, pending hardware run)
+## 1. Goal 1 — get a valid SD-card upgrade file (solved, pending hardware run)
 
 The camera's SD upgrade (`C:\JH_5408*.bin`) is the only in-field path (no CH341A programmer available).
 
@@ -63,6 +63,7 @@ This is the reason for the whole project — editing what the camera does.
       Lead: `GImagePreviewer.exe` (in the G+ IDE extraction) — inspect whether it can encode.
 - [ ] Modify **behavior/code** (e.g. disable "Select program", always start recording) →
       patch ARM binary, rebuild the image + filename, validate with the emulator, flash.
+      → **active, see §4** (boot straight into photo mode).
 - [ ] Optional: repack the `SPII` dump cleanly into a `GP+` partition as a standalone base image.
 
 ---
@@ -84,7 +85,51 @@ This is the reason for the whole project — editing what the camera does.
 
 ---
 
-## 4. Committed / done (no more action unless noted)
+## 4. Goal 2 — boot straight into photo mode (app/UI layer)
+
+**Want:** power-on goes directly to the camera/photo screen; today it shows the
+"photo / video / settings" menu and you must pick photo every time.
+
+**Verdict:** achievable — pure app logic, no signature anywhere. Static analysis done
+2026-09-10; **nothing flashed yet**. Full write-up: notes §10.
+
+### Confirmed (notes §10)
+- Boot screen *is* the mode menu: display init `0x16ce8` installs draw handler
+  **`0x1617c`** (via `0x1670c`), which draws `SELECT MODE` (`0x16474`, str id `0x98`) and
+  loads the mode icons `PV0%02d.GPZP` in `0x14054` using `menu_cursor − 4`.
+- **Menu cursor = RAM `0x10fbc5`** (`ctx 0x10fbc4` +1); 9 pool sites image-wide, 3 writers.
+- **Active mode is a separate id**, low 9 bits of a message, stored at RAM **`0x110d1e`**.
+- **Mode dispatcher = task slot `0x2d`**, body **`0x25868`**: decodes the id, stores it at
+  `0x110d1e`, and switch-dispatches at `0x258e0`:
+  `0x100`→`0x65b0` (USB/power), **`0x101`→`0x1c644` = video record** (`state_video_record_entry`),
+  **`0x102`→`0x1d6fc` = still capture**, `0x104`/`0x105`/`0x10A`/`0x10B`/`0x10D`.
+- **Menu index → mode id** (switch at `0x2552c`, func `0x2526c`):
+  `1→0x102 (photo)`, `2→0x101 (video)`, `3→0x105`, `4→0x104`, `5→0x10B`, `6→0x10A`.
+- `ap_display_init` `0x165ac` allocates exactly **4** screen slots.
+- `GPRSPAK` string ids == ordinals from `+0x5E4`; ids `131 Photo`, `132 Video`,
+  `142 PHOTO`, `143 VIDEO`, `149 SET DATE`, `152 SELECT MODE`, `0x54 NO CARD`.
+
+### Next steps (in order)
+- [ ] **Pin the boot-time mode sender.** Find what first posts a mode id to the queue ctx
+      at `0x110d80`; users of that ctx: `0x1617c`, `0x1d6c0`, `0x24f7c`, `0x24ff0`,
+      `0x2526c`, `0x25868`, `0x259f0`, `0x25a00`.
+- [ ] Decode `PV000`–`PV003` (GPZP codec / `GImagePreviewer.exe`) to confirm the icon order
+      matches the index→mode table (`1 = photo`).
+- [ ] Patch (preferred → fallback): force the boot mode request to `0x102`; else auto-run
+      the menu's OK path for photo; else default in the dispatcher.
+- [ ] Rebuild with `build_upgrade_files.py`, validate `emu_updater.py --stage both` **and**
+      `--stage write`, size ≤ `0x1E0000`, then flash (when the camera is recovered).
+- [ ] Hardware-verify: power on → lands in photo, shutter works, menu still reachable.
+
+### Tooling
+- [x] `scripts/find_xrefs.py` — recursive ARM disassembler + xref map (reset vector +
+      `stmfd` prologues + switch tables; ~193k insns / 4.6k funcs / 16k calls).
+      Note: conditional `bl<cond>` must fall through — treating it as terminating silently
+      truncates app functions (this hid the `0x1c644`/`0x1d6fc` callers).
+
+---
+
+## 5. Committed / done (no more action unless noted)
 
 - [x] Firmware analysis / region map (notes).
 - [x] Assets extracted (35 `.gpzp`, 5 `.wav`, 3 `.jpg` + `standalone`).
@@ -100,8 +145,10 @@ This is the reason for the whole project — editing what the camera does.
 
 ## Key references
 - `REVERSE_ENGINEERING_NOTES.md` — full findings, region map, corrected upgrade format, emulator.
+- `scripts/find_xrefs.py` — recursive disassembler + xref map (use this for any
+  "who calls / who references X" question; `--callers`, `--refs`, `--disasm`, `--strings`).
 - `scripts/emu_updater.py` (validate), `scripts/build_upgrade_files.py` (build).
 - `scripts/arm_disasm.py`, `firmware_analysis.py`, `extract_gpz_assets.py`.
 - Binary: `charmera.bin` (LFS-tracked).
 
-_Updated: 2026-09 (emulator session)_
+_Updated: 2026-09-10 (emulator session + app/UI pass — §4/notes §10: power-on mode menu)_

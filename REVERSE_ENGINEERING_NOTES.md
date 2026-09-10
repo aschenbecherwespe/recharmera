@@ -390,4 +390,197 @@ order. Last entry `USB_CONNECTGPZP` id `0x240` → `0x168000` (its data runs to 
 
 ---
 
-*Last updated: 2026-09 (emulator session; §9 JPEG carving added 2026-09-10)*
+## 10. Application / UI layer — power-on mode menu (exploratory pass 2026-09-10)
+
+> **Goal:** make the camera boot straight into photo mode instead of showing the
+> "photo / video / settings" menu on power-on. Everything below is static analysis of
+> `charmera.bin`; nothing has been flashed or confirmed on hardware.
+
+### 10.0 Method
+
+Linear disassembly desyncs on this image, so all xrefs below come from
+**`scripts/find_xrefs.py`** — a recursive ARM disassembler seeded from the reset vector and
+from every `stmfd sp!,{…,lr}` prologue, which also follows `add pc,pc,rX,lsl #2` /
+`ldr pc,[pc,rX,lsl #2]` switch tables. It covers ~193k instructions / ~4.6k functions /
+~16k calls and reaches the updater (`0x21818`), the RTOS, the wifi stack and the app/UI
+layer:
+
+```
+.venv/bin/python scripts/find_xrefs.py                 # summary
+.venv/bin/python scripts/find_xrefs.py --callers 0x25868
+.venv/bin/python scripts/find_xrefs.py --refs 0x10fbc5
+.venv/bin/python scripts/find_xrefs.py --disasm 0x14054 --len 0x40
+.venv/bin/python scripts/find_xrefs.py --strings 0x1617c
+```
+
+### 10.1 Code base (needed to read any of this)
+
+`CPU addr = file offset − 0x200`. The vector table at **file `0x200`** has a literal pool
+at `0x220` holding `0x3c, 0x168, 0x174, …` — those are *CPU* addresses, so the reset stub
+lives at **file `0x23c`** (`msr cpsr_fsxc,#0xd3` …) and ends with `b #0x2dd48`.
+Consequence: pool words (function pointers) are CPU addresses, while `add rX,pc,#imm`
+targets and `bl` targets are already file offsets.
+
+### 10.2 Task table — `main` @ `0x2dd48`
+
+`main` calls `0x2dcac`, which calls `0x9012c(entry, arg=0, stack_ptr, slot)` once per task
+and finally `0x901f4(0xff)` to start the scheduler:
+
+| slot | entry (file) | notes |
+|---|---|---|
+| `0x11` | `0x13310` | system/state-control task; jump table @ `0x133b8` maps messages `0x10000100+state` → "set state 0…7" (handlers `0x13428`/`0x13434`/`0x13454`/`0x134b4`/`0x134c0`) |
+| `0x07` | `0x16dd4` | **display/UI task** (calls `ap_display_init`, dispatches on `msg>>24`) |
+| `0x01` | `0x12478` | browse/slider task |
+| `0x34` | `0x5cf0` | |
+| `0x30` | `0x8558` | |
+| `0x32` | `0x36970` | |
+| `0x2d` | `0x25668` | |
+
+Message IDs seen: `0x100001xx` (state/control), `0x100007xx`, `0x50xx` (keys),
+`0x70xx` (keys/power/USB; the updater/USB task `0x65b0` handles `0x703e/0x703f/0x7040/0x7042`).
+
+### 10.3 UI framework globals (RAM)
+
+| address | role | evidence |
+|---|---|---|
+| `0x10fbc4` | **UI/screen context** — `+1` = mode byte (§10.5), `+8` = screen count, `+0xA..0xC` = h:m:s, `+0x1c/+0x20/+0x24` = screen buf ptrs, `+0x34` = flag, `+0x48` = callback, `+0x4c` = icon buf | `ap_display_init` `0x165ac`, `0x15648`, `0x14a54` |
+| `0x10fcc0` | menu-handler context; 10 handlers registered by `0x1a958` into `+0,+4,+8,+0xc,+0x10,+0x18,+0x1c,+0x20,+0x24,+0x28` (`+0x14` is a 4-word array cleared by `0x14158`) | `0x1a958`, `0x14158` |
+| `0x10fc18` | current **draw** handler; `0x10fc1c` = tick/2nd handler | display task `0x16dd4` calls `[0x10fc18]` |
+| `0x10fc20` | screen-table base (entries 24 B, count at `0x10fbc4+8`) | `0x165ac`, `0x1617c` |
+| `0x10fd58` | display queue context | `0x16dd4` |
+
+`ap_display_init` (`0x165ac`) allocates **exactly 4** screen slots (`ctx+8 = 4`).
+
+### 10.4 The power-on screen *is* the mode menu
+
+Display init `0x16ce8` installs the initial handler pair via `0x1670c`, reading the pool
+at `0x167f0`:
+
+```
+pool[0x167f0] = 0x15f7c (CPU)  -> file 0x1617c   ; draw
+pool[0x167f4] = 0x144f4 (CPU)  -> file 0x146f4   ; tick
+```
+
+**Draw handler `0x1617c` is the select-mode screen.** It:
+- draws the literal **`SELECT MODE`** at `0x16474` (`mov r1,#0x98; bl 0x14e28`, id 152 = `0x98`); §10.6
+- draws the clock (`0x10fbce`, written by `0x14a54` / `0x14bc8`);
+- loads the mode icons: at `0x16258` it calls **`0x14054`**, which `sprintf`s
+  **`"PV0%02d.GPZP"`** (format string at `0x14100`) with index `mode_byte − 4` and loads
+  it with `0x1510`. So menu item *i* ⇔ `mode_byte = 4+i` ⇔ `PV00{i}`.
+
+Highlight/cursor painter **`0x2d568`** draws one of three bar shapes for cursor 0…3
+(called only from `0x1d6fc`).
+
+### 10.5 The mode byte: RAM `0x10fbc5` (= `ctx+1`)
+
+**Reads**
+| site | interpretation |
+|---|---|
+| `0x14054` | icon index = `v − 4` (valid 4…7 → `PV000`–`PV003`) |
+| `0xec9c`, `0xeef0` | frame assets `F_%d_%03d.GPZP` (fmt @ `0xed6a`), index = `v − 4` |
+| `0x6e188` (`avi_front_capture_set`), `0x6e61c` | capture path: `v − 8 ∈ 0…3` |
+| `0x6e4dc` | theme colours, switch on `v` = 8 / 9 / 10 |
+
+**Writes**
+| site | value |
+|---|---|
+| `0x1c6a4` (func `0x1c644`) | `0` |
+| `0x1d72c`, `0x1d740` (func `0x1d6fc`) | `0` |
+| `0x1de84` / `0x1df14` (func `0x1d6fc`) | prev/next: `v ∓ 1`, wrap `0xb → 0` |
+
+**Model (corrected — see §10.7):** `0x10fbc5` is the **menu cursor**, not the mode.
+The `− 4` uses select which `PV00{v-4}` icon is drawn for the highlighted item. The
+`− 8 ∈ 0…3` test on the capture path (`0x6e188`, `0x6e61c`) is still unexplained; the
+*active mode* is a separate id at RAM `0x110d1e` (§10.7). All 9 pool-load sites of
+`0x10fbc5` are enumerated above, so the read/write sets are believed complete.
+
+### 10.6 `GPRSPAK` string ids (`0x141400`) — measured
+
+Strings begin at `+0x5E4` (`"English"`), NUL-separated and contiguous, so the **ordinal is
+the runtime string id**. Draw APIs: `0x21a6c(target, id, …)` (assert name
+`ap_state_handling_str_draw`) and `0x14e28(target, id, x, y, …)`.
+
+Verified ids (cross-check: `0x1be80` draws id `0x54` on the no-SD branch of `0x22094`):
+
+| id | text | id | text |
+|---|---|---|---|
+| `0x54` | `NO CARD` | `132` | `Video` |
+| `0x55` | `Disk Full` | `142` | `PHOTO` |
+| `0x7F` | `WIFI Infor` | `143` | `VIDEO` |
+| `131` | `Photo` | `145` | `TIME` |
+| | | `149` | `SET DATE` |
+| | | `152` | `SELECT MODE` |
+
+### 10.7 RESOLVED — the mode is a separate id; `ctx+1` is only the menu cursor
+
+The earlier "mode entry writes `0x10fbc5 = 8…11`" model was **wrong**. There is a separate
+**mode id** and a dispatcher:
+
+**Mode dispatcher = task slot `0x2d`** (launched by `main` → `0x9012c`, entry `0x25668`),
+the body being **`0x25868`**:
+
+- receives a message on queue ctx RAM `0x110d80` (`0x8f760`), takes the **low 9 bits**
+  (`lsl #0x17 / lsr #0x17`) as the mode id,
+- stores it as `u16` at **RAM `0x110d1e`** (the field the driver handlers `0x78c0`/`0x798c`/
+  `0x7a34`/`0x7afc` and the boot menu `0x1617c` read),
+- switches on `id − 0x100` via the jump table at `0x258e0`:
+
+| mode id | case | state function | what it is (evidence) |
+|---|---|---|---|
+| `0x100` | `0x2591c` | `0x65b0` | USB/power task (shows `POWER_ON_LOGO`) |
+| `0x101` | `0x25950` | **`0x1c644`** | **video record** — contains the `__func__` string `state_video_record_entry` (`0x1cb8c`) |
+| `0x102` | `0x25934` | **`0x1d6fc`** | **still capture** — sets up the camera (`0x7e28`), drives the shutter, PV icons, cursor nav |
+| `0x104` | `0x25968` | — | |
+| `0x105` | `0x2598c` | — | |
+| `0x10A`…`0x10D` | `0x259c0`… | — | |
+
+`0x2591c/0x25934/0x25950` also write `[0x110d80+0x14] = mode` and `[0x110d80+4] = 0/1/2`.
+
+**Menu index → mode id table** (switch on `[msg+1]` at `0x2552c`, func `0x2526c`):
+
+| menu index | mode id |
+|---|---|
+| 1 | `0x102` (**photo**) |
+| 2 | `0x101` (**video**) |
+| 3 | `0x105` |
+| 4 | `0x104` |
+| 5 | `0x10B` |
+| 6 | `0x10A` |
+
+So `ctx+1` (`0x10fbc5`) really is just the menu cursor/highlight; the *active mode* is the
+id at `0x110d1e`. `0x1617c` (boot menu) reads it at `0x16234` (`ldrh r0,[0x110d1e]`,
+`… == 0x102` branch).
+
+**Tooling note:** the first version of the recursive disassembler (and the ad-hoc session
+pass) treated conditional `bl<cond>` (`blne`, `bleq`, …) as *terminating* branches, which
+silently truncated large app functions — that is why `0x1c644`/`0x1d6fc` looked like they
+had no callers and why only 7 of the 9 pool sites for `0x10fbc5` were visible. Both are
+fixed in `scripts/find_xrefs.py` (`split_branch()`); the callers are `0x25960` and
+`0x25948` in `0x25868`.
+
+### 10.8 Patch plan (revised)
+
+Force the camera into photo at boot instead of the select menu — candidate edits, in
+decreasing safety:
+
+1. **Boot-time mode request** — find the startup sender that posts the initial mode to the
+   queue at `0x110d80` and change it to `0x102`. Cleanest, but the sender is not yet pinned
+   (queue users: `0x1617c`, `0x1d6c0`, `0x24f7c`, `0x24ff0`, `0x2526c`, `0x25868`,
+   `0x259f0`, `0x25a00`).
+2. **Auto-select in the menu** — make the boot menu's OK path run for the photo item
+   (mode `0x102`) without user input.
+3. **Dispatcher default** — in `0x25868`, after the mode id is decoded, replace a
+   boot/menu id with `0x102`.
+
+All are single-site patches; none touch the updater or the boot header.
+
+### 10.9 Unknowns
+
+- `PV000`–`PV003` `.gpzp` headers are just `GPZP` + compressed payload (no dimensions/ID),
+  so **which icon is the camera is unknown** without the GPZP codec (existing TODO).
+- `0x146f4` is installed as the 2nd handler next to the select screen; its role
+  (tick vs key) is not confirmed.
+
+---
+
+*Last updated: 2026-09-10 (app/UI pass; §10 power-on mode menu)*
