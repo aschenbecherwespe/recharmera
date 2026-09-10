@@ -25,6 +25,7 @@ v?_*.bin
 
 # Carved JPEG output (regenerate via scripts/carve_jpegs.py)
 carved/
+carved_*/
 
 # Patched firmware images (regenerate via scripts/patch_boot_mode.py)
 patched/

@@ -34,9 +34,13 @@ The bundled `charmera.bin.png` (2048×1228) is a *user-created analysis artifact
 | `0x100000` – `0x10B12C` | Encoder/parser tables + 4 header-only `GPEncoder` JPEG stubs (§9) |
 | `0x10B12D` – `0x11FFFF` | zero-filled (0x00) — *not* erased flash, so a real write happened here |
 | `0x120000` | **`GP+` UI resource filesystem** (name→ID index + sector-aligned asset data, §9.4) |
-| `0x120600` – `0x17F1FF` | GPZP-compressed UI images / JPG / WAV assets (42 files extracted to `assets/`) |
-| `0x180000` – `0x185EFF` | **stored 960×720 photo** (GPEncoder JPEG, camera-written EXIF; §9.1) |
-| `0x186000` – end | erased `0xFF` — internal photo area, currently holds only that one image |
+| `0x120600` – `0x168E99` | GPZP-compressed UI images / JPG / WAV assets (42 files extracted to `assets/`) |
+| `0x168E9A` – `0x16FFFF` | erased `0xFF` |
+| `0x170000` – `0x1717FF` | **GPNV non-volatile records** — 12× `0x200` slots, CRC-32'd (§11) |
+| `0x171800` – `0x17EFFF` | erased `0xFF` — spare GPNV ring slots |
+| `0x17F000` – `0x17F1FF` | **internal photo-store index** — `(u32 slot, u32 size)` LE entries (§11.4) |
+| `0x17F200` – `0x17FFFF` | erased `0xFF` |
+| `0x180000` – … | **internal photo store** (`C:\SPIDCIM\SPI%02d.jpg`) — GPEncoder 960×720 JPEGs, one per slot (§9.1, §11.4) |
 
 ### Boot behavior (verified by disassembly)
 - Boot stub (`0x200`–`0x800`): register setup (`0xD0100038`, `0xD03000xx`, `0xD05001fc`, `0xD07023c0`), zero-fills RAM `0x10AF30` (len `0xA3820`).
@@ -123,7 +127,8 @@ A NOR chip decodes addresses modulo its capacity, so an address past the end of 
 | 0x1B0000 (SPII header length) | 0x1C0000 | in range |
 
 So the upgrade image must be **≤ 0x1E0000 bytes** (`CHIP_SIZE - 2 * SECTOR`).
-Everything past 0x186000 in the stock dump is `0xFF`, so truncating loses nothing.
+Everything past 0x186000 in this dump is `0xFF` (a used camera stores further photos
+there — §11.1), so truncating loses nothing.
 `scripts/build_upgrade_files.py` truncates automatically and
 `scripts/emu_updater.py --stage write` replays the whole erase/program sequence
 against a modelled chip and flags any out-of-range address.
@@ -345,10 +350,11 @@ stubs** (which contain no pixels and must not be mistaken for photos):
 - The date is **written by the camera, not copied from a template**: the SDK stubs format
   the same field `2012:01:21 16:24:08` (space before the time), this one is
   `2025:02:23:10:11:18` (colon) — different producer, so the image is a real capture.
-- Slot geometry: `0x17F1FF` is the last byte of the resource partition (`USB_CONNECT`),
-  `0x17F200`–`0x17FFFF` is erased, the JPEG starts exactly at `0x180000` and ends
-  `0x185EA3`, then 92 bytes of `0x00` padding (to `0x185F00`) and `0xFF` to the end of the
-  chip. One image, no index, no directory entry, nothing else in `0x180000`–`0x200000`.
+- Store geometry: the resource partition ends at `0x168E99`; `0x168E9A`–`0x16FFFF` is
+  erased, `0x170000`–`0x1717FF` holds GPNV records (§11), `0x17F000` holds the internal
+  store's index (§11.4), and the JPEG starts exactly at `0x180000`, ending `0x185EA3`, then
+  92 bytes of `0x00` padding (to `0x185F00`) and `0xFF` to the end of the chip. One image
+  plus its one index entry; nothing else in `0x180000`–`0x200000`.
 - It is *not* referenced by the `GP+` name table (highest id `0x240` → `0x168000`), so it
   is not a UI asset: it sits in the area after the resource partition.
 - Content: a blurred, over-exposed close-up (pink/red, light source upper right) — an
@@ -366,7 +372,7 @@ Both storage back-ends are present as path strings in the code region:
 `SPI_XX.JPG` is followed at `0xf3880` by a `(u16 w, u16 h, char *name)` table
 (320×240 QVGA … 4032×3024 12M — same names as the SD table at `0xf38f0`), i.e. the
 internal path is a first-class capture target, not dead code. The single photo in §9.1 is
-the only thing this dump has in that store.
+the only thing this dump has in that store — the donor dump carries two (§11.1).
 
 **No filesystem wrapper is present anywhere in the dump**: no FAT boot sector (`55 AA` at
 `+0x1FE` of any 512-byte boundary), no FAT volume label (`NO NAME`/`MSWIN4.1` occur only
@@ -385,7 +391,8 @@ no recoverable image in them.
 `0x120000`: `"GP+"`, 0x14-byte header, then 43 entries of 24 bytes —
 `char name[16]` (`NAME` immediately followed by `GPZP`/`JPG`/`WAV`, NUL-padded) + one zero
 `u32` + `u32 id`. Asset data lives at `0x120000 + id*0x200`, sector-aligned, in table
-order. Last entry `USB_CONNECTGPZP` id `0x240` → `0x168000` (its data runs to `0x17F1FF`);
+order. Last entry `USB_CONNECTGPZP` id `0x240` → `0x168000` (its data runs to `0x168E99`,
+the last non-`0xFF` byte before the GPNV area);
 `GPRSPAK` (id `0x10A` → `0x141400`) is the only blob that is not `GPZP`/`RIFF`/JPEG.
 
 ---
@@ -625,4 +632,85 @@ as `0xE59F1188` and the old value must be `0x10D`, so a wrong/patched base is re
 
 ---
 
-*Last updated: 2026-09-10 (app/UI pass; §10 power-on menu pinned + boot-to-photo patch)*
+## 11. GPNV non-volatile records at `0x170000` (donor-dump contrast, 2026-09-10)
+
+Found by diffing `charmera.bin` against a second, independent 2 MiB dump
+(`../Project-Sirius/Original_Firmware.bin`, "donor"). **The firmware is byte-identical:**
+`0x000000`–`0x170200` matches exactly (`md5 e4c462a67812fac70025e38cc800c875`); every
+difference is device state *after* the resource partition. Both dumps together pin down
+that state as follows.
+
+### 11.1 Diff summary (donor vs `charmera.bin`)
+
+| Region | Donor | `charmera.bin` |
+|---|---|---|
+| `0x000000` – `0x1701FF` | *identical* | *identical* (whole firmware + `GP+` assets) |
+| `0x170200` – `0x1717FF` | 11 further GPNV records (12 total) | erased — 1 record |
+| `0x17F004` – `0x17F00E` | 2 photo-index entries | 1 entry |
+| `0x180000` | 960×720 photo, 38478 B, EXIF `2025:01:01:00:10:41` | 960×720 photo, 24227 B, EXIF `2025:02:23:10:11:18` |
+| `0x1A5800` | 2nd 960×720 photo, 38286 B, EXIF `2025:01:01:00:10:45` | erased `0xFF` |
+| everything else | *identical* | *identical* |
+
+Carved with the existing `scripts/carve_jpegs.py`: donor → 4 complete + 4 header-only,
+`charmera.bin` → 3 + 4. Both `0x180000` JPEGs share the encoder header but are different
+captures, so this is camera usage state, **not** firmware.
+
+### 11.2 What the record *is*
+
+`0x170000` + N×`0x200` is a **GPNV** (Generalplus non-volatile) settings store:
+
+- The literal `"GPNV"` sits at file `0xF3BC0`, next to the default field values
+  `"CAM05_"` (7 B @ `0xF3BA4`) and `"12345678"` (9 B @ `0xF3BAB`) — both appear verbatim
+  in the record at `+0xAC` and `+0xCE`.
+- `func 0x1F89C` is the default-init path: it copies those two literals (lengths 7 and 9)
+  and zeroes a **`0x200`-byte RAM struct at `0x1107DC`**.
+- GPNV load: `0x1F89C` → `func 0x23E60` → `func 0xF0820`. `0xF0820` is the shared flash-read
+  API (device id u16 in RAM `0x110D5C`, open, then read) — 23 callers, so GPNV is one client
+  of a generic storage layer. `0x23E60` reads exactly `0x200` bytes into `0x1107DC`.
+- `func 0x1FAA8` (GPNV entry; one caller `0x24FD4`) touches `[0x1107DC+0xFA]`, the same byte
+  the record carries at `+0xFA`. The device-id → flash-address binding inside `0xF0820` is
+  **not yet traced**.
+
+### 11.3 Checksum — solved
+
+Record bytes `0xFC–0xFF` are a **big-endian standard CRC-32 (IEEE / zlib)** over bytes
+`0x00–0xFB`:
+
+```
+crc32(rec[0x00:0xFC]) == u32be(rec[0xFC:0x100])    # 12/12 donor records, 1/1 here
+```
+
+Corroborated by the firmware's own CRC-32 routine at `func 0x1FB0C`, which builds a
+256-entry table from polynomial `0xEDB88320`.
+
+### 11.4 The photo-store index at `0x17F000`
+
+One sector of `(u32 slot, u32 size)` little-endian pairs, zero-terminated:
+
+| dump | entries |
+|---|---|
+| donor | `(0x00010000, 38478)`, `(0x00010001, 38286)` |
+| `charmera.bin` | `(0x00010000, 24227)` |
+
+The sizes match the carved JPEG lengths exactly, so this is the internal store's directory;
+the low 16 bits of `slot` are the photo ordinal. Donor photo #2 sits at `0x1A5800`, i.e.
+slots are not packed — the exact slot size/stride is not pinned.
+
+### 11.5 What varies, and what's still unknown
+
+Across the donor's 12 records only five content bytes ever differ from record 0 —
+`0x00`, `0x03`, `0x12`, `0x52`, `0x53` — plus the CRC. `u16@0x00` runs
+`513, 513, 515, 517, 519, 521` and `u16@0x52` runs `0, 1, 257, 257, …`, so these read as a
+write/version counter: the slots are successive snapshots (wear-levelled ring), not 12
+different settings.
+
+Still open:
+
+- semantics of the fixed `0x00`–`0x51` field block (defaults look encoder/driver-ish — unverified);
+- the slot ring's exact bound/policy (`0x170000`–`0x17F000` is 120 sectors; 12 used on the donor);
+- whether the CRC is verified on read;
+- whether `"CAM05_"` really is the model string (inferred from the default-init copy only).
+
+---
+
+*Last updated: 2026-09-10 (donor-dump contrast: firmware identical; §11 GPNV records + photo-store index)*

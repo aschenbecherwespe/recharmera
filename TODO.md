@@ -40,12 +40,12 @@ The camera's SD upgrade (`C:\JH_5408*.bin`) is the only in-field path (no CH341A
       check with `--stage both` **and** `--stage write`, then flash.
 
 ### Open questions
-- Internal photo store (`C:\SPIDCIM\SPI%02d.jpg`, `SPI_XX.JPG`): code confirms the feature,
-  and `charmera.bin` holds exactly one 960×720 capture at `0x180000` (notes §9.1) with the
-  rest of `0x180000`–`0x200000` erased and **no FAT wrapper**. Unresolved: is that slot a
-  factory-leftover photo, or the first write of the internal store? Once the camera is
-  recovered: shoot one photo with **no SD card**, re-dump, and diff `0x180000`–`0x200000`
-  (a second image / an index at `0x186000` would settle it).
+- Internal photo store (`C:\SPIDCIM\SPI%02d.jpg`, `SPI_XX.JPG`): **RESOLVED by the donor
+  dump** (notes §11.4). It is a real, indexed store: directory at `0x17F000`
+  (`(u32 slot, u32 size)` LE, sizes match the carved JPEGs), photos from `0x180000`, no FAT
+  wrapper. `charmera.bin` holds 1 capture (24227 B); the donor 2 (`0x180000`, `0x1A5800`) —
+  so `0x180000` is slot 0 of the store, not a factory leftover. Remaining: slot size/stride
+  (donor slot 1 is not adjacent — `0x1A5800`).
 - Unconfirmed on hardware: FAT32 vs exFAT, and the power state in which the updater runs
   (`check_fn` returns 0 when `power_state > 0x1f4`, string "not poweroff").
 - The `0xDECd8..0xDED50` ARM→library veneers do not decode as coherent code in either ISA
@@ -155,6 +155,27 @@ updater-validated 2026-09-10; **not yet flashed** (camera still bricked). Write-
 
 ---
 
+## 6. GPNV non-volatile records (`0x170000`) — donor-dump contrast (2026-09-10)
+
+Trigger: a second, independent 2 MiB dump (`../Project-Sirius/Original_Firmware.bin`).
+Full write-up in notes §11; short form:
+
+- **Firmware identical.** `0x000000`–`0x170200` is byte-identical between the two dumps
+  (`md5 e4c462a67812fac70025e38cc800c875`); every md5 difference is device state after the
+  resource partition — GPNV records, photo index, stored photos. (So md5 alone is *not* a
+  firmware-identity test on these dumps.)
+- **GPNV store found** at `0x170000`, `0x200`-byte slots: donor 12, `charmera.bin` 1
+  (slot 0 identical in both). Markers `"GPNV"` (`0xF3BC0`), `"CAM05_"`, `"12345678"`;
+  RAM struct `0x1107DC`; load path `0x1F89C` → `0x23E60` → `0xF0820`.
+- **Checksum solved:** `+0xFC..0xFF` = big-endian IEEE CRC-32 over `+0x00..0xFB` (12/12
+  donor records). Firmware CRC-32 routine at `0x1FB0C` (poly `0xEDB88320`).
+- **Photo index found** at `0x17F000` — `(u32 slot, u32 size)` LE; entries match the carved
+  JPEG sizes (see §1 open questions).
+- Still open: field semantics (`0x00`–`0x51`), ring bound/policy, CRC enforced on read?,
+  `CAM05_` == model string?
+
+---
+
 ## Key references
 - `REVERSE_ENGINEERING_NOTES.md` — full findings, region map, corrected upgrade format, emulator.
 - `scripts/find_xrefs.py` — recursive disassembler + xref map (use this for any
@@ -164,4 +185,4 @@ updater-validated 2026-09-10; **not yet flashed** (camera still bricked). Write-
 - `scripts/arm_disasm.py`, `firmware_analysis.py`, `extract_gpz_assets.py`.
 - Binary: `charmera.bin` (LFS-tracked); `patched/` holds generated images (gitignored).
 
-_Updated: 2026-09-10 (boot-to-photo patch pinned, built and updater-validated — §4/notes §10)_
+_Updated: 2026-09-10 (donor-dump contrast: GPNV records + photo-store index mapped — §6/notes §11)_
