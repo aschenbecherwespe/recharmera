@@ -394,7 +394,7 @@ order. Last entry `USB_CONNECTGPZP` id `0x240` → `0x168000` (its data runs to 
 
 > **Goal:** make the camera boot straight into photo mode instead of showing the
 > "photo / video / settings" menu on power-on. Everything below is static analysis of
-> `charmera.bin`; nothing has been flashed or confirmed on hardware.
+> `charmera.bin`; the patch is built and updater-validated but **not yet flashed** (§10.9).
 
 ### 10.0 Method
 
@@ -434,7 +434,7 @@ and finally `0x901f4(0xff)` to start the scheduler:
 | `0x34` | `0x5cf0` | |
 | `0x30` | `0x8558` | |
 | `0x32` | `0x36970` | |
-| `0x2d` | `0x25668` | |
+| `0x2d` | `0x25868` | **mode dispatcher** — task-table pool word is the CPU ptr `0x25668`; body is file `0x25868` (§10.7) |
 
 Message IDs seen: `0x100001xx` (state/control), `0x100007xx`, `0x50xx` (keys),
 `0x70xx` (keys/power/USB; the updater/USB task `0x65b0` handles `0x703e/0x703f/0x7040/0x7042`).
@@ -516,10 +516,11 @@ Verified ids (cross-check: `0x1be80` draws id `0x54` on the no-SD branch of `0x2
 The earlier "mode entry writes `0x10fbc5 = 8…11`" model was **wrong**. There is a separate
 **mode id** and a dispatcher:
 
-**Mode dispatcher = task slot `0x2d`** (launched by `main` → `0x9012c`, entry `0x25668`),
-the body being **`0x25868`**:
+**Mode dispatcher = task slot `0x2d`** (launched by `main` `0x2dcac` → `0x9012c`; the
+task-table pool word `0x25668` is a CPU ptr, so the file body is **`0x25868`**):
 
-- receives a message on queue ctx RAM `0x110d80` (`0x8f760`), takes the **low 9 bits**
+- receives a message on the mode queue (handle slot RAM `0x110d90` = ctx `0x110d80+0x10`;
+  `0x8f760`), takes the **low 9 bits**
   (`lsl #0x17 / lsr #0x17`) as the mode id,
 - stores it as `u16` at **RAM `0x110d1e`** (the field the driver handlers `0x78c0`/`0x798c`/
   `0x7a34`/`0x7afc` and the boot menu `0x1617c` read),
@@ -558,23 +559,64 @@ had no callers and why only 7 of the 9 pool sites for `0x10fbc5` were visible. B
 fixed in `scripts/find_xrefs.py` (`split_branch()`); the callers are `0x25960` and
 `0x25948` in `0x25868`.
 
-### 10.8 Patch plan (revised)
+### 10.8 PATCHED — the boot-mode post is pinned (2026-09-10)
 
-Force the camera into photo at boot instead of the select menu — candidate edits, in
-decreasing safety:
+The boot-time sender is **not** among the `0x110d80` refs of §10.5: senders reach the
+queue through its handle slot at **`0x110d90`** (`= mode ctx 0x110d80 + 0x10`), so a
+pool-ref scan for `0x110d80` structurally cannot see them. Mode-queue handle users
+(`--refs 0x110d90`): `0x6578` (boot exit, below), `0x65b0` (power-on), `0x0af80`,
+`0x17e80`, `0x17f94`, `0x1b3d0`, `0x1c644`, `0x1d6fc`, `0x77eac`.
 
-1. **Boot-time mode request** — find the startup sender that posts the initial mode to the
-   queue at `0x110d80` and change it to `0x102`. Cleanest, but the sender is not yet pinned
-   (queue users: `0x1617c`, `0x1d6c0`, `0x24f7c`, `0x24ff0`, `0x2526c`, `0x25868`,
-   `0x259f0`, `0x25a00`).
-2. **Auto-select in the menu** — make the boot menu's OK path run for the photo item
-   (mode `0x102`) without user input.
-3. **Dispatcher default** — in `0x25868`, after the mode id is decoded, replace a
-   boot/menu id with `0x102`.
+Boot chain (all disassembly-confirmed):
 
-All are single-site patches; none touch the updater or the boot header.
+1. Dispatcher task `0x25868` inits (`0x24f7c`) and seeds the mode queue with **`0x100`**
+   (`0x25874` `mov r1,#64,#30` = `0x40 ror 30` = `0x100`; `0x25878` `ldr r0,[r5,#0x10]`;
+   `0x2587c` `bl 0x8f87c`).
+2. Id `0x100` → case `0x2591c` → **`0x65b0`** (power-on handler). It polls the *event*
+   queue (ctx `0x110d88`, handle `[ctx+8]`) via `0x25c38`/`0x8f760`. Its only loop exit is
+   `mov r4,#7` on event **`0x5025`** (`0x6644`; `0x5025` is synthesised at runtime, so it
+   has no pool site to search for).
+3. That event posts `0x108` (`0x6638`, SD-update gate → `0x21370`) and then leaves through
+   **`0x6578`**, which posts the UI mode to the same queue:
+   ```
+   0x6578: ldr r0,[pc,#0x198]  ; =0x110d90   (mode-queue handle slot)
+   0x657c: push {r3,lr}
+   0x6580: ldr r0,[r0]
+   0x6584: ldr r1,[pc,#0x188]  ; literal 0x6714 = 0x10D   <-- boot UI mode
+   0x6588: bl 0x8f87c          ; msgQSend(queue, mode)
+   ```
+4. `0x6578` has exactly **one** caller (`0x668c`, inside `0x65b0`) and its literal `0x6714`
+   is loaded only by `0x6584`. Net boot is therefore
+   `0x100` (logo) → `0x108` (SD-update check) → **`0x10D` (select menu)** — and the last
+   post is the single thing to change.
 
-### 10.9 Unknowns
+Mode-id → handler (case table `0x258e0`, index `id − 0x100`):
+`0x100`→`0x65b0`, `0x108`→`0x21370` (updater), `0x10D`→`0x2526c` (menu),
+`0x101`→`0x1c644` (video), **`0x102`→`0x1d6fc` (still capture)**.
+
+### 10.9 Patch applied — `scripts/patch_boot_mode.py`
+
+Rewrites the single literal `0x6714` (`0x10D` → `0x102`); the loader `0x6584` is guarded
+as `0xE59F1188` and the old value must be `0x10D`, so a wrong/patched base is refused.
+
+```
+.venv/bin/python scripts/patch_boot_mode.py                        # -> patched/charmera_photo.bin
+.venv/bin/python scripts/build_upgrade_files.py patched/charmera_photo.bin
+.venv/bin/python scripts/emu_updater.py --stage both  <JH_5408*.bin>
+.venv/bin/python scripts/emu_updater.py --stage write <JH_5408*.bin>
+```
+
+* Updater gates both pass: `check_fn()=1` (UPDATE AVAILABLE) and the byte-sum gate
+  reaches sector-erase; write stage `31` erases / `7680` page programs, last sector
+  `0x1f0000`, range OK. The patch site (`0x6714`) is outside the updater's executed path.
+* The SD-update gate is preserved (boot still posts `0x108`), and the menu stays reachable:
+  photo and video post `0x10D` themselves (`0x1d6fc` at `0x1e0c0`, `0x1c644` at `0x1ccfc`).
+* **Not yet flashed.** `0x1d6fc`'s only caller is the dispatcher case and it self-initialises
+  (clears `0x10fbc5`, `0x110278[2/3]`, `0x10fd58`; calls `0x14158` via `0x1d6c0`), but in
+  stock firmware it is entered *after* the menu preamble `0x2526c` — entering it directly
+  from power-on is the remaining hardware risk to watch on first flash.
+
+### 10.10 Unknowns
 
 - `PV000`–`PV003` `.gpzp` headers are just `GPZP` + compressed payload (no dimensions/ID),
   so **which icon is the camera is unknown** without the GPZP codec (existing TODO).
@@ -583,4 +625,4 @@ All are single-site patches; none touch the updater or the boot header.
 
 ---
 
-*Last updated: 2026-09-10 (app/UI pass; §10 power-on mode menu)*
+*Last updated: 2026-09-10 (app/UI pass; §10 power-on menu pinned + boot-to-photo patch)*

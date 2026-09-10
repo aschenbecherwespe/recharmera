@@ -26,6 +26,9 @@ v?_*.bin
 # Carved JPEG output (regenerate via scripts/carve_jpegs.py)
 carved/
 
+# Patched firmware images (regenerate via scripts/patch_boot_mode.py)
+patched/
+
 # Project noise files (empty dev placeholders)
 *.gpr
 *.rep/

@@ -90,8 +90,8 @@ This is the reason for the whole project — editing what the camera does.
 **Want:** power-on goes directly to the camera/photo screen; today it shows the
 "photo / video / settings" menu and you must pick photo every time.
 
-**Verdict:** achievable — pure app logic, no signature anywhere. Static analysis done
-2026-09-10; **nothing flashed yet**. Full write-up: notes §10.
+**Verdict:** achievable — pure app logic, no signature anywhere. Patch built and
+updater-validated 2026-09-10; **not yet flashed** (camera still bricked). Write-up: notes §10.
 
 ### Confirmed (notes §10)
 - Boot screen *is* the mode menu: display init `0x16ce8` installs draw handler
@@ -99,33 +99,45 @@ This is the reason for the whole project — editing what the camera does.
   loads the mode icons `PV0%02d.GPZP` in `0x14054` using `menu_cursor − 4`.
 - **Menu cursor = RAM `0x10fbc5`** (`ctx 0x10fbc4` +1); 9 pool sites image-wide, 3 writers.
 - **Active mode is a separate id**, low 9 bits of a message, stored at RAM **`0x110d1e`**.
-- **Mode dispatcher = task slot `0x2d`**, body **`0x25868`**: decodes the id, stores it at
-  `0x110d1e`, and switch-dispatches at `0x258e0`:
-  `0x100`→`0x65b0` (USB/power), **`0x101`→`0x1c644` = video record** (`state_video_record_entry`),
-  **`0x102`→`0x1d6fc` = still capture**, `0x104`/`0x105`/`0x10A`/`0x10B`/`0x10D`.
+- **Mode dispatcher = task slot `0x2d`**, body **`0x25868`** (task-table pool word `0x25668`
+  is a CPU ptr): receives on the mode queue whose handle slot is RAM **`0x110d90`**
+  (= ctx `0x110d80`+0x10), decodes the id, stores it at `0x110d1e`, and switch-dispatches at
+  `0x258e0`:
+  `0x100`→`0x65b0` (power-on), `0x108`→`0x21370` (SD updater), `0x10D`→`0x2526c` (menu),
+  **`0x101`→`0x1c644` = video record** (`state_video_record_entry`),
+  **`0x102`→`0x1d6fc` = still capture**, `0x104`/`0x105`/`0x10A`/`0x10B`.
 - **Menu index → mode id** (switch at `0x2552c`, func `0x2526c`):
   `1→0x102 (photo)`, `2→0x101 (video)`, `3→0x105`, `4→0x104`, `5→0x10B`, `6→0x10A`.
 - `ap_display_init` `0x165ac` allocates exactly **4** screen slots.
 - `GPRSPAK` string ids == ordinals from `+0x5E4`; ids `131 Photo`, `132 Video`,
   `142 PHOTO`, `143 VIDEO`, `149 SET DATE`, `152 SELECT MODE`, `0x54 NO CARD`.
 
+### Done this pass (2026-09-10)
+- [x] **Boot-mode sender pinned** — `0x6578`, with exactly one caller (`0x668c`, in the
+      power-on handler `0x65b0`), posts `0x10D` (select menu) with `msgQSend 0x8f87c`.
+      It reaches the queue via the **handle slot `0x110d90`** (= ctx `0x110d80`+0x10), which
+      is why a pool scan for `0x110d80` never showed it. Boot chain:
+      `0x100` (logo) → `0x108` (SD-update gate `0x21370`) → `0x10D` (menu).
+- [x] **Patch** `scripts/patch_boot_mode.py` — rewrites the single literal `0x6714`
+      (`0x10D` → `0x102`); guarded on the loader insn `0xE59F1188` and the old value.
+- [x] Built `patched/charmera_photo.bin` → `JH_5408202609101200_0F7E97CF.bin`
+      (0x1E0000, in-range tail erase); `emu_updater.py --stage both` and `--stage write`
+      both pass.
+
 ### Next steps (in order)
-- [ ] **Pin the boot-time mode sender.** Find what first posts a mode id to the queue ctx
-      at `0x110d80`; users of that ctx: `0x1617c`, `0x1d6c0`, `0x24f7c`, `0x24ff0`,
-      `0x2526c`, `0x25868`, `0x259f0`, `0x25a00`.
+- [ ] Hardware-verify (when the camera is recovered): power on → lands in photo, shutter
+      works, menu still reachable. Watch the direct-`0x1d6fc` entry (stock enters it after
+      the menu preamble `0x2526c`) — notes §10.9.
 - [ ] Decode `PV000`–`PV003` (GPZP codec / `GImagePreviewer.exe`) to confirm the icon order
       matches the index→mode table (`1 = photo`).
-- [ ] Patch (preferred → fallback): force the boot mode request to `0x102`; else auto-run
-      the menu's OK path for photo; else default in the dispatcher.
-- [ ] Rebuild with `build_upgrade_files.py`, validate `emu_updater.py --stage both` **and**
-      `--stage write`, size ≤ `0x1E0000`, then flash (when the camera is recovered).
-- [ ] Hardware-verify: power on → lands in photo, shutter works, menu still reachable.
 
 ### Tooling
 - [x] `scripts/find_xrefs.py` — recursive ARM disassembler + xref map (reset vector +
       `stmfd` prologues + switch tables; ~193k insns / 4.6k funcs / 16k calls).
       Note: conditional `bl<cond>` must fall through — treating it as terminating silently
       truncates app functions (this hid the `0x1c644`/`0x1d6fc` callers).
+- [x] `scripts/patch_boot_mode.py` — rewrites boot UI mode literal `0x6714` (`0x10D`→`0x102`)
+      with loader/value guards; `patched/` is generated (gitignored).
 
 ---
 
@@ -147,8 +159,9 @@ This is the reason for the whole project — editing what the camera does.
 - `REVERSE_ENGINEERING_NOTES.md` — full findings, region map, corrected upgrade format, emulator.
 - `scripts/find_xrefs.py` — recursive disassembler + xref map (use this for any
   "who calls / who references X" question; `--callers`, `--refs`, `--disasm`, `--strings`).
-- `scripts/emu_updater.py` (validate), `scripts/build_upgrade_files.py` (build).
+- `scripts/emu_updater.py` (validate), `scripts/build_upgrade_files.py` (build),
+  `scripts/patch_boot_mode.py` (boot-to-photo patch).
 - `scripts/arm_disasm.py`, `firmware_analysis.py`, `extract_gpz_assets.py`.
-- Binary: `charmera.bin` (LFS-tracked).
+- Binary: `charmera.bin` (LFS-tracked); `patched/` holds generated images (gitignored).
 
-_Updated: 2026-09-10 (emulator session + app/UI pass — §4/notes §10: power-on mode menu)_
+_Updated: 2026-09-10 (boot-to-photo patch pinned, built and updater-validated — §4/notes §10)_
