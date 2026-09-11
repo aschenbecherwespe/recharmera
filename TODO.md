@@ -176,6 +176,51 @@ Full write-up in notes §11; short form:
 
 ---
 
+## 7. Peripherals + video codec (scouting pass 2026-09-11)
+
+### Peripherals — what we know
+- **Sensor: unnamed.** No `GC*/OV*/SC*/SP0A*/HM*/IMX*/BF3*` part string anywhere; programmed
+  only via the SoC's CDSP/ISP block (`drv_l2_cdsp_open` `0x6a3e0`, `sensor_preview_init`
+  `0x6c368`), AE/AWB `GP$ v1.5.0 ... by Comi 20200318` (`0x97548`). No sensor init table in
+  flash → naming it needs a physical teardown. Encoder offers QVGA…12M (`0xf3880`).
+- **Display: `GPLIB_VIDMUX`** (`0xb7764`, build 2018/08/30), panel part **unknown** (no
+  `ST77xx`/`ILI9xxx`/`GC9xxx`/`NT35xxx`, no panel init sequence). UI art is 160×80.
+- WiFi = SSV6158 host + SSV6020 PHY; flash 2 MiB SPI NOR; SD via FatFs; audio WAV only.
+- Full write-up: notes §12.
+
+### Video: AVI is a container; codec is MJPEG; MP4 is mux/dec only
+- `C:\DCIM\MOVI%04d.avi` written by `AviPackerV3` (RIFF/AVI muxer, banner @ `0x8c540`).
+- Codec = **MJPEG** — supported-name list at `0xfc84` is `XVID M4S2 H263 MJPG`; hardware JPEG
+  block (`Disp_Mjpeg_Init` `0x106c8`, `drv_l1_jpeg_*`). So AVI is just the wrapper; frames are
+  hardware JPEGs, no interframe compression.
+- MP4/MOV **muxers are present** (`vidMP4HeaderInit H264` `0xb38a4`, full ISO-BMFF boxes,
+  `MovPacker` `0x90cb0`+) but only for **decode/playback** — no H.264 encoder in the image.
+  So "record MP4" is not a config toggle; there's no HW H.264 encoder to enable.
+- Notes §13.
+
+### Open questions
+- Name sensor + panel from a teardown (package/flex markings).
+- Is the absent H.264 encode truly absent, or an unlinked lib the linker dropped? (spot-check
+  the MP4 funcs' callers before trusting "no encoder").
+- WiFi-strip feasibility: quantify recoverable bytes and the call-site re-pointing needed
+  (see §8).
+
+---
+
+## 8. Future: reclaiming space (idea, not started)
+
+The unit has **no WiFi hardware**, yet the image carries the SSV6158/6020 stack + lwIP +
+DHCP/DNS/AP-STA MLME (path strings `0xf8c27`–`0xfe1ef`, lwIP `0x3a4e2`–`0xf5776`). Stripping
+it is the obvious way to free flash/RAM for custom code, but it is a real linker-style job:
+- [ ] Map the WiFi/lwIP code extents (not just strings) and the RAM pool it reserves
+      (`gp_wifi_malloc*`).
+- [ ] Find the top-level wifi init/start call sites and neuter them cleanly (boot must still
+      reach the mode queue).
+- [ ] Remove the string pool + tables, keep the `SPII` image bootable and flashable.
+- [ ] Re-verify the SD-updater path after any such strip (it lives near this code).
+
+---
+
 ## Key references
 - `REVERSE_ENGINEERING_NOTES.md` — full findings, region map, corrected upgrade format, emulator.
 - `scripts/find_xrefs.py` — recursive disassembler + xref map (use this for any
@@ -185,4 +230,4 @@ Full write-up in notes §11; short form:
 - `scripts/arm_disasm.py`, `firmware_analysis.py`, `extract_gpz_assets.py`.
 - Binary: `charmera.bin` (LFS-tracked); `patched/` holds generated images (gitignored).
 
-_Updated: 2026-09-10 (donor-dump contrast: GPNV records + photo-store index mapped — §6/notes §11)_
+_Updated: 2026-09-11 (peripherals inventory + video codec findings — §7/notes §12–13)_

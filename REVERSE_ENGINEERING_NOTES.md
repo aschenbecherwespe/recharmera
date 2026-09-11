@@ -714,3 +714,125 @@ Still open:
 ---
 
 *Last updated: 2026-09-10 (donor-dump contrast: firmware identical; §11 GPNV records + photo-store index)*
+
+---
+
+## 12. Peripherals inventory (scouting pass, 2026-09-11)
+
+Goal was just to answer "what camera/display hardware is this, and which drivers". Result:
+the **SoC-side blocks are identified; the discrete sensor and panel are not** — the dump
+carries no sensor or panel part strings and no register-init tables for either.
+
+### 12.1 Camera sensor — unnamed CMOS, SoC-internal ISP pipeline
+
+| Item | Value | Evidence |
+|---|---|---|
+| Part number | **unknown** | no `GC0xxx`/`GC2xxx`/`OVxxxx`/`SC0xxx`/`SP0Axx`/`HMxxxx`/`IMXxxx`/`BF3xxx` string anywhere in the image (case-insensitive scan) |
+| Capture init | `sensor_preview_init` @ `0x6c368` | only caller is `0xe708`, inside the capture-config func `0xe4ec` |
+| AE/AWB | `gp_aeawb_thread_create` @ `0x66afc`; banner `GP$ v1.5.0 AE AWB library by Comi 20200318` @ `0x97548` | string + caller `0x6691c` |
+| DSP block | `drv_l2_cdsp_open` @ `0x6a3e0`; `drv_l1_CdspRead_SP_Table` @ `0x9a716`; `ISP_Read_Gamma_Table` @ `0x98dcc`; `drv_l1_FronSetInputFormat` @ `0x9b3b0` | string table `0x833xx`–`0x878xx` is the JPEG/ISP driver option block |
+| Driver region | 48 funcs @ `0x6a000`–`0x6c400` | MMIO writes to `0xD0500000`, `0xD0800000`, `0xD0842000`, `0xD0452000`, `0xD0F00000` |
+| Mode/geometry tables | `0x1492c0`/`0x149340`/`0x149348` (`u16` crops, `u32` strides) | read via `0x6c7e8`/`0x6c7f8`/`0x6c880`/`0x6c8fc` (mode 0..4 → crop/stride) |
+
+The sensor is programmed entirely through the **CDSP/ISP** register block; the sensor's own
+register-init sequence is not present as a table in flash (compare: a real turnkey build
+usually ships a `sensor_init[]`). So the part can't be recovered from software — needs a
+teardown (markings on the die package) to name it.
+
+Resolution is bounded by the **encoder** table, not the sensor: a `(u16 w, u16 h, char
+*name)` list at `0xf3880` carries `QVGA 320×240 … 12M 4032×3024` (14 entries). The SD path
+offers the same set (`0xf38f0`).
+
+### 12.2 Display — `GPLIB_VIDMUX`, unnamed panel
+
+| Item | Value | Evidence |
+|---|---|---|
+| Library | **`GPLIB_VIDMUX`** | `GPLIB_VIDMUX_SVN_VERSION` @ `0xb7764`, build time `2018/08/30 14:51:44` @ `0xb7798` |
+| Panel part | **unknown** | no `ST77xx`/`ILI9xxx`/`GC9xxx`/`NT35xxx`/`HX8357`/`RM68200` strings; no panel init sequence |
+| UI layer | display task `0x16dd4`; `ap_display_init` `0x165ac`; draw handlers `0x1617c` (boot/menu) / `0x146f4` (tick); `0x10fc18` = current draw fn | notes §10.3–10.4 |
+| Menu string | `LCD Off` @ `0x141bdc`; `Auto Off` @ `0x141be4` | UI string block `0x141axx` |
+| Size hints | small panel — `POWER_ON_LOGO.jpg` and `AUDIO_REC_BG.jpg` are **160×80**; most status icons are 512 B (16×16-ish) | `assets/` |
+
+Panel size is *not* directly stated; 160×80 is the UI-art coordinate space, not necessarily
+native panel pixels. To name the panel you need the flex/glass marking.
+
+### 12.3 Rest of the peripheral set
+
+| Peripheral | Detail |
+|---|---|
+| SoC | Generalplus **GPCV1235F** (`F:\gp15\GPCV1235F_WIFI_SingleCam_SDK_20191212\…`) |
+| Flash | 2 MiB SPI NOR (`SPII` container), `W25Q16`-class |
+| Storage | SD via FatFs; internal SPI photo store (`C:\SPIDCIM\SPI%02d.jpg`) |
+| Audio | WAV playback assets only; no codec part identified |
+| WiFi | **SSV6158 host + SSV6020 PHY** — `ssv6xxx_*`, `ssv_wifi_*`, `ssv6020_pkt.c`; source paths `0xf8bf4`–`0xfe1bc` |
+| Keys/USB | key + USB test paths (`Key And USB Test` @ `0x141d20`); `drv_l1_usbd_*`, `drv_l2_usbd_msdc_init` |
+
+---
+
+## 13. Video container + codecs (2026-09-11)
+
+### 13.1 The `.avi` files are containers, and the codec is Motion-JPEG
+
+Video files are written to `C:\DCIM\MOVI%04d.avi`, built by the **`AviPackerV3`** muxer
+(banner `GP$322 Generalplus AviPackerV3 20140916` @ `0x8c540`, `RIFF/AVI hdrl/avih/strl/strf`
++ `idx1`/`LIST`/`movi4` tags immediately after). It is a plain RIFF/AVI muxer.
+
+The video *codec* is **MJPEG**: the codec-name string list at `0xfc84` is
+`"XVID" "M4S2" "H263" "MJPG"` (4-char FourCCs concatenated), i.e. the SDK supports these
+four encoder modes, and the UI only exposes MJPEG. This matches the rest of the dump —
+`Disp_Mjpeg_Init` (`0x106c8`), `video_decode_jpeg` (`0x1046c`),
+`ap_state_handling_jpeg_decode_thumbnail` (`0x237f0`), and the `drv_l1_jpeg_*` hardware
+JPEG block (`0x833xx`–`0x8780b`). Frame sizes come from the same `(w,h,name)` table; the
+stored stills are 960×720.
+
+So: AVI = container only; each frame is a hardware-JPEG-compressed image. No interframe
+compression, hence the large files.
+
+### 13.2 MP4 **is** in the build — but only the muxer/decoder side
+
+The firmware contains a full ISO-BMFF writer:
+`vidMP4HeaderInit H264` @ `0xb38a4`, `ftyp/qt/isom/avc1/mp41/mp4v/mp4a/avcC` boxes @
+`0xb3894`–`0xb38f0`, `moov/trak/mdia/minf/dinf/stbl/mdat` @ `0xb64ec`+, `vidMP4VideoPack`
+@ `0xb6cf8`, `vidMP4ThumbPack` @ `0xb6e7c`, plus a **`MovPacker`** (QuickTime/MOV) muxer
+at `0x90cb0`+.
+
+But this is the **decoder/muxer half of the SDK**: `vid_dec_set_aud_dec_work_mem`,
+`avc1` parsing and an "Invalid H264 Frame" error string mean it exists to *play*
+H.264/MP4/MOV, not to record it. Evidence the record path does **not** use it:
+
+- On a real MJPEG recorder the `.avi` RIFF header would embed `"MJPG"`; `MJPG` appears
+  only at `0xd22c` (adjacent to the `XVID/M4S2/H263/MJPG` list), with **no pointer
+  referencing that string** and no `MJPG` text in the file-path/record region.
+- The H.264 encoder that an MP4-record path would need is absent: no `vid_enc`,
+  no SPS/PPS/IDR/rate-control strings, no H.264 encode entry point. The only `H264`
+  mentions are MP4 mux/parse.
+- The record path strings (`C:\DCIM\MOVI%04d.avi`, `RECR%04d.wav`, `*.avi`) sit in the
+  app region around `0xf379x`, alongside the AVI packer — not the MP4 one.
+
+**Conclusion:** there is no hardware H.264 encoder here, so an MP4-recording mod is not a
+config flag — it would need a real (software or hardware) H.264 encoder that the chip
+doesn't provide. The honest options for smaller video are: keep MJPEG, or reduce frame
+size/frame rate for the same container.
+
+### 13.3 Space cost of the dead WiFi stack (context for stripping it)
+
+Measured string/path clusters (source-path density is a good proxy for where each
+subsystem compiles to):
+
+| Subsystem | Path-string span |
+|---|---|
+| lwIP 1.4.0 | `0x3a4e2`–`0xf5776` (interleaved with host code) |
+| SSV6158/6020 WiFi | `0xf8c27`–`0xfe1ef` |
+| JPEG/ISP driver | `0x833ff`–`0x8780b` |
+| AVI packer | `0xcbd0`–`0x8ce22` |
+| MP4/MOV packer | `0xb38a4`–`0xb7cd1`, `0x90cb0`+ |
+
+The device reportedly ships **without** the WiFi module, so the SSV 802.11 stack + lwIP
++ DHCP/DNS/AP-STA MLME are pure dead weight. A real strip needs a linker-style pass
+(remove code + its string pool, re-point the mode-queue/wifi-init call sites, keep the
+`SPII` layout bootable) rather than deleting strings — but it is the most obvious
+space-recovery target if we ever need bytes for new code. See TODO §7.
+
+---
+
+*Last updated: 2026-09-11 (peripherals inventory §12; video codec/container §13)*
