@@ -198,10 +198,24 @@ Full write-up in notes §11; short form:
   So "record MP4" is not a config toggle; there's no HW H.264 encoder to enable.
 - Notes §13.
 
+### Codec feasibility (done this pass — notes §14)
+- **CPU has no FPU/SIMD.** ~222k insns of real code disassemble with no genuine VFP/NEON
+  (the few `v*` hits are cond=0xF aliases on data), and zero `clz`/`rev`/`ldrex`/`movw`.
+  Plain ARM9-class core, soft-float — no vector unit for a SW codec.
+- **RAM ≈ 640 KB total**, shared (boot zero-fills `0x10AF30`+`0xA3820`). No DDR.
+  Flash headroom ~660 KB clean (`0x185F00`–`0x200000` is the bulk).
+- **No HW encoder beyond JPEG.** `XVID M4S2 H263 MJPG` (`0xfc84`) sits next to
+  `vid_dec_set_aud_dec_work_mem` → it is a **decode** list, and none of the FourCCs appears
+  as a code constant anywhere. Media block `0xD0800000` (202 refs / 191 funcs) is driven by
+  the `drv_l1_jpeg_*` (baseline-JPEG: quant/Huffman/VLC) module — no SPS/PPS/rate-control.
+- **Verdict:** MP4 recording is neither a config flag nor a "link in a lib" job. Practical
+  file-size lever is MJPEG frame size/rate + JPEG quantisation (`0x1093xx`).
+
 ### Open questions
 - Name sensor + panel from a teardown (package/flex markings).
-- Is the absent H.264 encode truly absent, or an unlinked lib the linker dropped? (spot-check
-  the MP4 funcs' callers before trusting "no encoder").
+- **The one real codec lead:** if a sibling GPCV product records MP4/MOV, this SoC may have
+  an MPEG-4 *encode* mode the product driver never initialises — a driver/muxer job, not an
+  encoder job. Test: diff a sibling's `0xD0800000` register sequence against this one.
 - WiFi-strip feasibility: quantify recoverable bytes and the call-site re-pointing needed
   (see §8).
 

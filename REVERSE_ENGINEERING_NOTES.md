@@ -836,3 +836,89 @@ space-recovery target if we ever need bytes for new code. See TODO §7.
 ---
 
 *Last updated: 2026-09-11 (peripherals inventory §12; video codec/container §13)*
+
+---
+
+## 14. Feasibility of a better video codec (software vs hardware) — 2026-09-11
+
+Question: could we get H.264/MP4-class compression — is an encoder a hardware requirement, or
+can we link in a software library?
+
+### 14.1 CPU capability — no FPU, no SIMD
+
+Disassembling only real function bodies (~222 k insns, per the `find_xrefs` function set)
+yields **no genuine VFP/NEON**. The handful of `v*` mnemonics Capstone prints are cond=`0xF`
+unconditional-space aliases on plain data (e.g. `vstmdblo r5!, {s15..s31}` inside what is
+clearly ARM code) — false positives, not FP.
+
+Cross-check on ISA level: zero `clz` (ARMv5+), zero `rev`/`sxtb`/`uxtb`, zero
+`ldrex`/`strex`, zero `movw`/`movt`, zero `dmb`/`dsb`/`isb`, exactly 1 `blx` and 2 `svc` in
+the whole image. That profile is a **plain ARM core with no DSP/SIMD extension and no FPU**
+(ARM7/ARM9/ARM9E-class; the SDK is built for `-marm`, soft-float). Practically: there is no
+vector unit to accelerate a software codec.
+
+### 14.2 Memory budget — ~640 KB total RAM, shared with everything
+
+The boot stub zero-fills RAM at `0x10AF30` for `0xA3820` bytes, so the flat window is
+`0x10AF30`–`0x1B2750` ≈ **640 KB**. That is *all* RAM: RTOS heap, task stacks, screen
+buffers (4 slots), JPEG encode/decode buffers, WiFi pools, GPNV struct `0x1107DC`, mode
+queues. The allocator keeps small fixed pools (`Fix64 … Fix4096`) plus a variable region,
+and the AE/AWB/JPEG paths allocate their work buffers from it. There is no DDR and no
+external memory.
+
+Flash headroom is better but modest: ~660 KB of clean space, dominated by
+`0x185F00`–`0x200000` (488 KB, past the photo store) and ~60 KB of spare GPNV ring
+(`0x170200`–`0x17F000`); `0x10B12D`–`0x120000` (84 KB) is zeroed encoder-table area, not free
+in the "unreferenced" sense.
+
+### 14.3 No hardware encoder for anything but JPEG
+
+The SDK's FourCC list `"XVID" "M4S2" "H263" "MJPG"` sits at `0xfc84`–`0xfc93`, immediately
+adjacent to the string `vid_dec_set_aud_dec_work_mem` (`0xfc98`) — i.e. it belongs to the
+**video decoder**, and enumerates the *decode* formats. It is a decode capability list, not
+an encoder menu. None of the four FourCCs appears as an immediate or pool constant anywhere
+else (only the ASCII run and the MP4 `mp4v` box string), so nothing selects them numerically.
+
+The hardware video pipe is one big shared media bank:
+
+| MMIO base | refs | funcs | role |
+|---|---|---|---|
+| `0xD0800000` | 202 | 191 | main media/JPEG/ISP register bank |
+| `0xD0800800` | 12 | 12 | sub-block of the above |
+| `0xD0500000` | 25 | 25 | second media/ISP bank |
+| `0xD1100000` | 41 | 40 | (WiFi SDIO/related) |
+| `0xD0300000` | 10 | 10 | clock/reset |
+| `0xD0100000` | 10 | 10 | system control |
+| `0xD9003fxx` | 9 | 5 | small peripheral block |
+
+The JPEG codec's register-level driver is the `0x833xx`–`0x878xx` module (the
+`drv_l1_jpeg_*` option block, `video_decode_jpeg` `0x1046c`, `jpeg_scaler_set_parameters`
+`0x22954`, `jpeg_memory_allocate` `0x22ad4`, `Disp_Mjpeg_Init` `0x106c8`). It configures
+image size, YUV sampling, quant + Huffman tables, VLC address/length and
+(de)compression start. That is a **baseline-JPEG block**: it has JPEG's quant/Huffman
+parameters and nothing resembling an H.264 SPS/PPS/rate-control interface.
+
+### 14.4 Verdict
+
+- **A software H.264/MPEG-4 encoder is not viable** on this part: no SIMD/FPU, ~640 KB of
+  shared RAM, and an unknown-but-modest core clock. Baseline H.264 is ~orders of magnitude
+  more work per pixel than the hardware JPEG path already in use; MJPEG here is effectively
+  free.
+- **No hardware H.264/H.263/MPEG-4 encode path is visible** in this build. The MP4/MOV code
+  (`vidMP4*` `0xb38a4`+, `MovPacker` `0x90cb0`+, ISO-BMFF boxes) is mux/decode only.
+- Therefore MP4 recording is *not* a config flag on this firmware, and not a "drop in a lib"
+  job either.
+
+### 14.5 Still open (the one real lead)
+
+The `XVID/M4S2/H263/MJPG` decode list proves the **SDK family** had MPEG-4/H.263 in it. If
+some sibling GPCV product ships a hardware MPEG-4 *encoder*, then this SoC's `0xD0800000`
+media block may have an encode mode that this product's driver simply never initialises.
+That is a driver/muxer problem, not an encoder problem — and it is the only path to smaller
+files. Cheap test: find a sibling firmware with MP4/MOV *recording* and diff its media-block
+register sequence against this one. Until then, the practical lever for file size is MJPEG
+frame size/rate and JPEG quantisation (tables at `0x1093xx`, encoder headers data-driven).
+
+---
+
+*Last updated: 2026-09-11 (peripherals inventory §12; video codec/container §13; SW/HW codec feasibility §14)*
