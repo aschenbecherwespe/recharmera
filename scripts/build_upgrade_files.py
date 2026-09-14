@@ -38,6 +38,7 @@ Verify with:
 import argparse
 import os
 import sys
+import struct
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from emu_updater import (                                            # noqa: E402
@@ -49,6 +50,7 @@ BASE = "charmera.bin"
 INSTALLED = b"202505201029"           # build stamp compiled into the firmware
 DEFAULT_VERSION = b"202609101200"
 SPII_LEN_OFF = 0x10                   # SPII header field 0x001B0000 (image length)
+FW_VERSION_OFF = 0x218C4              # "202505201029" string inside the firmware
 
 
 def fit_image(raw: bytes) -> tuple[bytes, str]:
@@ -73,6 +75,10 @@ def main() -> int:
     ap.add_argument("--version", default=DEFAULT_VERSION.decode(),
                     help=f"12-char version for the filename (must differ from "
                          f"{INSTALLED.decode()!r})")
+    ap.add_argument("--bump", action="store_true",
+                    help="also rewrite the version string inside the firmware image "
+                         "to match --version, so the camera 'remembers' the update "
+                         "and won't re-flash the same file on the next boot")
     args = ap.parse_args()
 
     version = args.version.encode()
@@ -82,10 +88,23 @@ def main() -> int:
         print(f"warning: version {version.decode()!r} equals the installed build - "
               f"the camera would ignore the file", file=sys.stderr)
 
-    raw = open(args.base, "rb").read()
+    raw = bytearray(open(args.base, "rb").read())
+
+    if args.bump:
+        if FW_VERSION_OFF + 12 > len(raw):
+            raise SystemExit(f"refusing to bump: image too small for version at "
+                             f"0x{FW_VERSION_OFF:x}")
+        old = bytes(raw[FW_VERSION_OFF:FW_VERSION_OFF + 12])
+        if old != INSTALLED:
+            print(f"warning: version at 0x{FW_VERSION_OFF:x} is {old!r}, "
+                  f"not the stock {INSTALLED!r} - overwriting anyway", file=sys.stderr)
+        raw[FW_VERSION_OFF:FW_VERSION_OFF + 12] = version
+        print(f"  bump     : firmware version at 0x{FW_VERSION_OFF:x} "
+              f"{old!r} -> {version!r}")
     image, note = fit_image(raw)
     name = canonical_name(image, version).decode()
     out = os.path.join(args.dir, name)
+    os.makedirs(args.dir, exist_ok=True)
     with open(out, "wb") as f:
         f.write(image)
 

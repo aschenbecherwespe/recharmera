@@ -142,6 +142,28 @@ them; a file named `JH_5408.bin` gives `fname[7..19] = ".bin"` (differs → atte
 
 ## 4. Empirical Test Log
 
+### Hardware run 2026-09-14 — boot-to-photo patch flashed, version-bump finding
+`JH_5408202609101200_0F7E97CF.bin` (boot-mode patch `0x6714: 0x10D→0x102`) flashed
+successfully — camera boots straight into still capture. Confirmed on hardware.
+
+**Double-flash issue discovered:** the version string `202505201029` at flash
+`0x218C4` was NOT patched by `patch_boot_mode.py`, so after flashing, the camera
+still reported the old version. `check_fn()` re-detected the upgrade file on the
+SD card and re-flashed it on every boot.
+
+**Fix:** the version string inside the firmware image must be bumped to match the
+filename version. `scripts/build_upgrade_files.py --bump` now does this (rewrites
+`0x218C4` from `202505201029` to the new `--version` value, so the byte-sum/checksum
+changes and must be recalculated — the script handles that).
+
+With a bumped image, the SD file can stay on the card permanently: the first boot
+flashes, subsequent boots match filename↔installed version and are ignored.
+
+**100% completion hang (known, expected):** after the final write, the flasher
+polls MMIO `0xD0000068` bit0 and only self-powers-off after 20 consecutive high
+reads. The signal identity is unpinned; manual reboot after `Upgrade 100%` is the
+expected workflow.
+
 ### Hardware run 2026-09-10 #1 — format CONFIRMED
 `JH_5408202609101200_117C97DA.bin` on a FAT32 card root, booted on the camera: no
 "Program error", the upgrade ran and reached **`Upgrade     100 %`** — which is the
@@ -213,6 +235,19 @@ flash that had just lost 64 KiB, so the wait loop could never complete its power
 
 > The old "patching the file's `0x19` disabled the upgrade" reading was a misattribution:
 > the filename, not the file content, drives both gates.
+
+### Hardware run 2026-09-14 — brick state dumped and RECOVERED
+
+Camera was read back via `pico-serprog` (Raspberry Pi Pico, TinyUSB `0xcafe:4001`, USB CDC
+serial `/dev/cu.usbmodem1234561`) + SOIC8 clip, using `flashrom -p serprog:dev=<port>:115200,spispeed=2M`.
+
+**Pre-restore dump** (`broken_flash_dump.bin`) confirms the damage map above: exactly one
+64 KiB region differs from `charmera.bin` — `0x010000`–`0x020000` is all `0xFF` (erased).
+Everything else is byte-identical to the original dump.
+
+Recovery: `flashrom -E` (full erase) followed by `flashrom -w charmera.bin` at 2 MHz.
+Write verified clean; independent read-back matched `charmera.bin` SHA-256 exactly. Camera
+boots normally.
 
 Every row above is now reproducible offline with the emulator (§8) — no SD card needed:
 
@@ -921,4 +956,4 @@ frame size/rate and JPEG quantisation (tables at `0x1093xx`, encoder headers dat
 
 ---
 
-*Last updated: 2026-09-11 (peripherals inventory §12; video codec/container §13; SW/HW codec feasibility §14)*
+*Last updated: 2026-09-14 (hardware run #3: brick dumped & recovered via external programmer; recovery options §4 resolved)*

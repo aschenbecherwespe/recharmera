@@ -27,12 +27,11 @@ The camera's SD upgrade (`C:\JH_5408*.bin`) is the only in-field path (no CH341A
       The full 2 MiB image drives the flasher's trailing erase to `0x210000`; the 2 MiB
       part decodes that modulo capacity, so it erased flash `0x010000-0x01FFFF`
       (64 KiB of core code). Reproducible offline: `emu_updater.py --stage write`.
-- [ ] **Recover the camera** (in this order):
-      1. external programmer write-back of `charmera.bin` (SOIC8 clip / desolder);
-      2. USB ISP via `GPDevFWUpdater.dll` from the G+ IDE, if the boot ROM enters
-         download mode (untested);
-      3. try the SD path anyway with the correctly sized image (updater code survived at
-         `0x20000`, but the firmware is broken at `0x010000`, so this is a long shot).
+- [x] **Recover the camera (2026-09-14)**: external programmer write-back of
+      `charmera.bin` via `pico-serprog` (Raspberry Pi Pico, `0xcafe:4001`) + SOIC8 clip.
+      Pre-restore dump of the bricked state (`broken_flash_dump.bin`) confirms exactly
+      one 64 KiB sector erased at `0x010000`–`0x020000`, matching the predicted damage
+      map. Write verified clean and the camera boots.
 - [ ] **Never flash an image > 0x1E0000 bytes.** `build_upgrade_files.py` now truncates
       automatically and `emu_updater.py --stage write` verifies the whole erase/program
       sequence including the trailing sector.
@@ -138,6 +137,13 @@ updater-validated 2026-09-10; **not yet flashed** (camera still bricked). Write-
       truncates app functions (this hid the `0x1c644`/`0x1d6fc` callers).
 - [x] `scripts/patch_boot_mode.py` — rewrites boot UI mode literal `0x6714` (`0x10D`→`0x102`)
       with loader/value guards; `patched/` is generated (gitignored).
+
+### Hardware run 2026-09-14
+- [x] Flashed `JH_5408202609101200_0F7E97CF.bin` on hardware: boots straight to
+      photo mode. Patch confirmed working.
+- [x] Double-flash identified: firmware version string at `0x218C4` was not
+      patched, so camera re-flashed on every boot. Fixed by `--bump` in
+      `scripts/build_upgrade_files.py` (rewrites image version to match filename).
 
 ---
 
