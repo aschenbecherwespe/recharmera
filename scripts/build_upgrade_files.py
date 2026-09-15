@@ -31,6 +31,7 @@ truncation drops is 0xFF in the stock dump, so nothing is lost.
 
 Usage:
     python3 scripts/build_upgrade_files.py [dump.bin] [-d DIR] [--version VER12]
+                                           [--clean] [--bump]
 Verify with:
     .venv/bin/python scripts/emu_updater.py --stage write <out.bin>   # write tail
     .venv/bin/python scripts/emu_updater.py --stage both  <out.bin>   # both gates
@@ -51,6 +52,14 @@ INSTALLED = b"202505201029"           # build stamp compiled into the firmware
 DEFAULT_VERSION = b"202609101200"
 SPII_LEN_OFF = 0x10                   # SPII header field 0x001B0000 (image length)
 FW_VERSION_OFF = 0x218C4              # "202505201029" string inside the firmware
+
+# Device-state regions wiped by --clean (REVERSE_ENGINEERING_NOTES.md §11):
+#   0x170000-0x17EFFF  GPNV non-volatile settings (12 x 0x200-byte ring slots)
+#   0x17F000-0x17FFFF  internal photo-store index ((u32 slot, u32 size) entries)
+#   0x180000-0x185FFF  stored photos (960x720 GPEncoder JPEGs, one per slot)
+# Everything past 0x186000 is already 0xFF in the stock dump.
+GPNV_START = 0x170000
+PHOTO_END = 0x186000
 
 
 def fit_image(raw: bytes) -> tuple[bytes, str]:
@@ -79,6 +88,10 @@ def main() -> int:
                     help="also rewrite the version string inside the firmware image "
                          "to match --version, so the camera 'remembers' the update "
                          "and won't re-flash the same file on the next boot")
+    ap.add_argument("--clean", action="store_true",
+                    help=f"wipe device state (GPNV settings + photo store, "
+                         f"0x{GPNV_START:x}-0x{PHOTO_END:x}) to 0xFF so the "
+                         f"upgrade file carries firmware + assets only")
     args = ap.parse_args()
 
     version = args.version.encode()
@@ -89,6 +102,16 @@ def main() -> int:
               f"the camera would ignore the file", file=sys.stderr)
 
     raw = bytearray(open(args.base, "rb").read())
+
+    cleaned = False
+    if args.clean:
+        if PHOTO_END > len(raw):
+            raise SystemExit(f"refusing to clean: image too small for the "
+                             f"0x{GPNV_START:x}-0x{PHOTO_END:x} region")
+        raw[GPNV_START:PHOTO_END] = b"\xff" * (PHOTO_END - GPNV_START)
+        cleaned = True
+        print(f"  clean    : wiped 0x{GPNV_START:x}-0x{PHOTO_END-1:x} "
+              f"(GPNV settings + photo index + stored photos) to 0xFF")
 
     if args.bump:
         if FW_VERSION_OFF + 12 > len(raw):
@@ -111,6 +134,9 @@ def main() -> int:
     checksum = byte_sum(image)
     print(f"{out}")
     print(f"  image    : {len(image)} bytes (0x{len(image):x}) from {args.base} - {note}")
+    if cleaned:
+        print(f"  state    : device settings and stored photos BLANKED "
+              f"(factory-fresh; firmware re-inits GPNV on boot)")
     print(f"  name     : {name}  ({len(name)} chars)")
     print(f"             {NAME_PREFIX.decode()}|{version.decode()}|"
           f"{name[19]}|{checksum:08X}|{NAME_SUFFIX.decode()}")

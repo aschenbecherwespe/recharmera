@@ -33,3 +33,6 @@ patched/
 # Project noise files (empty dev placeholders)
 *.gpr
 *.rep/
+
+# maybe a sdk reference https://github.com/wythe-lin/ZTKVR
+ZTKVR/

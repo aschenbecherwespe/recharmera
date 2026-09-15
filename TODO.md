@@ -71,6 +71,11 @@ This is the reason for the whole project — editing what the camera does.
 
 - [x] `scripts/build_upgrade_files.py` — rewritten for the confirmed format (emits the file
       **and** its canonical name; computes the whole-file byte sum).
+- [x] `--clean` flag added to `build_upgrade_files.py` — blanks GPNV settings
+      (0x170000–0x17EFFF), photo-store index (0x17F000–0x17FFFF), and stored photos
+      (0x180000–0x185FFF) to 0xFF so the upgrade file is a factory-fresh firmware+assets
+      image.  Emulator-validated; GPNV default-init path (0x1F89C) should re-initialise
+      on first boot (unverified on hardware).
 - [x] `scripts/emu_updater.py` — Unicorn harness: runs `check_fn` + `flasher` offline and
       reports both gates; reproduces every logged hardware result.
 - [x] `scripts/carve_jpegs.py` — carves every JPEG in a dump and separates *complete*
