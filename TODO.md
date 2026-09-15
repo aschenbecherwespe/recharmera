@@ -246,6 +246,30 @@ it is the obvious way to free flash/RAM for custom code, but it is a real linker
 
 ---
 
+## 9. Logging infrastructure / diagnostics (2026-09-15)
+
+Findings from the ZTKVR sibling-SDK cross-reference (notes §15).
+
+### Confirmed
+- **No UART in this build.** Zero UART register words anywhere in `charmera.bin`
+  (exhaustive scan of `0xC0060000`–`0xC00600FF`); no uart/`print_string` symbols.
+  ZTKVR by contrast ships a full UART driver (`0xC0060008` block, 115200 on `IOE2`/`IOE3`).
+- **Logging is compiled in but stubbed out.** `0x714` is `mov pc, lr` with **1873 callers**.
+  Format strings survive and are still referenced (e.g. `"Assert!! file: %s, function: %s,
+  line: %d"` @ `0x3929c`, refs `0x390fc`/`0x393ac`).
+- **Asserts hang silently.** `0xac1d8` is `b #0xac1d8` (282 callers).
+
+### Leads
+- [ ] Redirect the `0x714` stub to a real sink — one patch lights up all 1873 messages
+      (incl. file/function/line on every assert). Best discovery handle available.
+- [ ] Sink choice: UART peripheral likely exists in silicon (same `GPCV12XX`/`GPL326xx`
+      header family), but `IOE2`/`IOE3` bonding is unproven. The USB ring-buffer path
+      (ZTKVR's `PRINT_OUTPUT_USB`, `get_usb_logger_data`) may be more reachable.
+- [ ] A frozen camera may be sitting in the `0xac1d8` spin loop — worth checking when
+      diagnosing hangs.
+
+---
+
 ## Key references
 - `REVERSE_ENGINEERING_NOTES.md` — full findings, region map, corrected upgrade format, emulator.
 - `scripts/find_xrefs.py` — recursive disassembler + xref map (use this for any
@@ -255,4 +279,4 @@ it is the obvious way to free flash/RAM for custom code, but it is a real linker
 - `scripts/arm_disasm.py`, `firmware_analysis.py`, `extract_gpz_assets.py`.
 - Binary: `charmera.bin` (LFS-tracked); `patched/` holds generated images (gitignored).
 
-_Updated: 2026-09-11 (peripherals inventory + video codec findings — §7/notes §12–13)_
+_Updated: 2026-09-15 (ZTKVR cross-reference + logging infrastructure — §9/notes §15)_

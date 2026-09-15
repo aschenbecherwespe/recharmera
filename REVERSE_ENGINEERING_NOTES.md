@@ -956,4 +956,107 @@ frame size/rate and JPEG quantisation (tables at `0x1093xx`, encoder headers dat
 
 ---
 
-*Last updated: 2026-09-14 (hardware run #3: brick dumped & recovered via external programmer; recovery options §4 resolved)*
+## 15. ZTKVR SDK cross-reference + logging infrastructure (2026-09-15)
+
+Cross-referenced against `https://github.com/wythe-lin/ZTKVR` (cloned to `ZTKVR/`, gitignored).
+Goal: find whether the sibling SDK exposes UART/debug plumbing this firmware lacks.
+
+### 15.1 Platform relationship — same family, different die
+
+| Item | ZTKVR | CHARMERA |
+|---|---|---|
+| Project dir | `project/326B_CVR` | build path `G:\code\2247\5408\v006` |
+| Silicon | `GP3268xxB_CVR` (log path) | `GPCV1235F` |
+| Product | dashcam (DVR516/K12-class) | action cam |
+| Sensor companion | ZT3120/ZT3150 (`zt31xx.c`) | WH5408 + SSV6158/6020 WiFi |
+
+Evidence they are the same platform generation:
+
+- **Boot-stub register block is bit-identical.** `ZTKVR/project/326B_CVR/startup.s:44-52`
+  defines `P_INT_GMASK 0xD0100038`, `P_DMA0_CTRL 0xD0300000` (+`0x40`/`0x80`/`0xC0`),
+  `P_PPU_ENABLE 0xD05001FC`, `P_JPEG_CTRL 0xD07023C0`, `P_KECON 0xD0100020`.
+  `charmera.bin` @ `0x3E0` contains exactly `380010d0 000030d0 400030d0 800030d0
+  c00030d0 fc0150d0 c02370d0`.
+- **Memory map matches:** ISRAM `0xF8000000`, NOR/wakeup `0x10000000`, GPIO `0xC0000000`,
+  SDRAM `0x20000000`, GPZP staging `0xB2000000` (`GPZPAddr=0xB2000000` in the packer).
+- **Shared middleware:** `GPZP` compression, `gplib_*` naming, `drv_l1_*`/`drv_l2_*` drivers.
+- **Vendor tooling groups them:** `ZTKVR/tool/G+CodePacker 1.0.9.27/PackConfig/HeaderInfo/
+  HeaderInfo.ini:50` maps `GPCV12XXA` → `GPL326xx_SPI_HeaderInfo.ini`. Our SDK path is
+  `GPCV1235F`, so `GPCV12XX` and `GPL326xx` share a header family.
+
+> Sibling dies, **not the same part**. Useful for decoding the `0x200` boot stub and the
+> register map; do *not* carry over peripheral or pin assumptions.
+
+### 15.2 UART logging — present in ZTKVR, absent here
+
+ZTKVR ships a complete UART driver and routes all debug output through it:
+
+- `ZTKVR/driver_l1/common/inc/drv_l1_uart.h` — `uart0_init`, `uart0_buad_rate_set`,
+  `uart0_tx/rx_enable`, `uart0_data_send/get`, word length / parity / FIFO control.
+- `ZTKVR/driver_l1/inc/drv_l1_sfr.h:261-269` — `R_UART_CTRL` `0xC0060008`,
+  `R_UART_BAUD_RATE` `0xC006000C`, `R_UART_STATUS` `0xC0060010`, `R_UART_FIFO` `0xC0060014`.
+- `ZTKVR/project/326B_CVR/inc/driver_l1_cfg.h:52` — `_DRV_L1_UART 1`,
+  `UART0_BAUD_RATE 115200`, TX/RX on `IOE2`/`IOE3`.
+- `ZTKVR/gplib/print_string/src/gplib_print_string.c` — `print_string()` with two sinks:
+  blocking byte loop over UART, and a 10×512 B ring buffer drained via
+  `get_usb_logger_data()` (`PRINT_OUTPUT_UART` / `PRINT_OUTPUT_USB`).
+- `ZTKVR/project/326B_CVR/main.c:178` — `set_print_output_type(PRINT_OUTPUT_UART | PRINT_OUTPUT_USB)`.
+
+`charmera.bin` has **none of it**:
+
+- Zero UART register words. Exhaustive unaligned scan for any word in
+  `0xC0060000`–`0xC00600FF` returns **nothing** (51 words land in `0xC006xxxx`, all
+  `0xC006E240`-class data, not the UART block).
+- No `uart` / `print_string` / `PRINT_OUTPUT` / `usb_logger` symbols or strings.
+
+### 15.3 The logging call sites survived — routed to a stub
+
+The SDK compiled logging *in*, then replaced the sink with an empty function.
+
+| Item | Value |
+|---|---|
+| Sink stub | `0x714` = `mov pc, lr` (`e1a0f00e`); `0x710` = `pop {pc}`; `0x718` = `mov pc, lr` |
+| Callsites | **1873** callers of `0x714` |
+| Assert formatter | `"Assert!! file: %s, function: %s, line: %d\n\t0"` @ `0x3929c` |
+| Assert refs | `0x390fc` (`adr`, in func `0x390bc`), `0x393ac` (`adr`, in func `0x39348`) |
+| Assert hang | `0xac1d8` = `b #0xac1d8` (infinite loop), **282** callers |
+| Live example | `0x83d04` in func `0x8367c` refs `"Calling to drv_l1_jpeg_yuv_sampling_mode_set(0x%x) failed\r\n"` @ `0x83ea4` |
+
+Assert opcode pattern (from func `0x390bc`):
+
+```
+0x390f0: mov  r3, #0x4f        ; line 79
+0x390f4: add  r2, pc, #0x18c   ; function name
+0x390f8: ldr  r1, [pc, #0x198] ; file name
+0x390fc: add  r0, pc, #0x198   ; "Assert!! file: %s, function: %s, line: %d"
+0x39100: bl   #0x714           ; print_string  -> no-op
+0x39104: bl   #0xac1d8         ; hang
+```
+
+So debug output goes **nowhere** — not UART, not USB. The camera's USB is mass-storage
+only (`drv_l2_usbd_msdc_init` `0x2a304`).
+
+### 15.4 Why this matters going forward
+
+1. **`0x714` is a single choke point gating 1873 messages**, including file/function/line
+   for every assert. Redirect that one stub to a real writer and the entire firmware's
+   diagnostics light up at once — a far better exploration handle than the
+   `0x100`/`0x108`/`0x10D` task-state chain in §10.
+2. **The silent assert hang is itself a finding.** A frozen camera is plausibly sitting in
+   the `0xac1d8` spin loop, which would make an existing hang diagnosable.
+3. **Caveat on the sink.** The UART peripheral almost certainly exists in silicon (same
+   `GPCV12XX`/`GPL326xx` header family as ZTKVR), but there is no evidence the `IOE2`/`IOE3`
+   pins are bonded out on this package. The USB ring-buffer path may be the reachable sink
+   instead.
+
+### 15.5 Provenance note (external, unverified)
+
+A blog post at `https://xecaz.com/reverse.engineering/tomlovdm9/` ("Lane Departure
+Microscope", Tomlov DM9) independently reaches the same conclusion — that this vendor's
+only public codebase is ZTKVR, whose headers call it `326B_CVR`. Treated as a corroborating
+lead only; nothing here depends on it. (An earlier claim of a MAME driver for this part was
+**fabricated and is withdrawn** — no such driver exists.)
+
+---
+
+*Last updated: 2026-09-15 (ZTKVR sibling-SDK cross-reference + logging infrastructure findings; §15)*
