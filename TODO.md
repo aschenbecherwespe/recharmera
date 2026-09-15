@@ -268,6 +268,36 @@ Findings from the ZTKVR sibling-SDK cross-reference (notes §15).
 - [ ] A frozen camera may be sitting in the `0xac1d8` spin loop — worth checking when
       diagnosing hangs.
 
+## 10. USB firmware update — ruled out at runtime (2026-09-15)
+
+Question raised: is there a USB firmware-update path in the ZTKVR SDK? Notes §16.
+
+### Confirmed
+- **No runtime USB flash path.** The USB archives (`drv_l1_usbd20.a` etc.) reference zero
+  flash-API symbols (`SPI_Flash_write_page`/`erase_block`/`n_page`/`n_block`/…), and
+  contain zero 4-byte words inside the real SPI controller windows (`0xC0080000`,
+  `0xC0090000`, `0xC0150000`) — so no symbol call and no MMIO poke. Checked in all 7 USB
+  archives; also checked raw bytes, not just `nm`.
+- **MSC volume is the SD card**, not flash: `ap_usb.c:114` registers `LUNTYPE_SDCMMC`
+  (`FS_SD`) because `MINI_DVR_STORAGE_TYPE == T_FLASH` (`customer.h:105`).
+- **Vendor SCSI channel is read-only** (`ap_usb.c:498`): `0xF000`/`0xF001`/`0xF010`/`0xF0F0`/
+  `0xF0FF`, gated on a `'G','P'` signature and a `ConfirmPass` flag.
+- **Both real update paths are SD-card** (main flash via `SPI_Flash_write_page`; ZT3120/3150
+  sensor over I2C via the mailbox).
+- **USB flashing exists only as factory ISP:** the production tool uploads a RAM stub
+  (`Code/GPL326XXB_SpiUsbBin.hdb`) to `0x20000000`, jumps to it, and *the stub* erases and
+  programs (verified: the stub carries NOR opcodes `0x02`/`0x20`/`0xD8`/`0x06`/`0x05`/`0xC7`).
+  That is why the resident driver needs no flash symbols.
+
+### Leads
+- [ ] The only USB route that could touch flash is boot-ROM download mode + an uploaded
+      stub. Whether ROM download engages with a damaged image is **untested** and is the
+      open question — not whether tooling exists. Relates to the §4 recovery options.
+- [ ] `GPDevFWUpdater.dll` (`msi_extract/cab/`) is the host side; next useful step is
+      extracting its VID/PID + handshake to know what it would look for on the wire.
+- [ ] Scope caveat: evidence is from the ZTKVR sibling die, not `charmera.bin`. The
+      structural claim likely holds (same vendor USB stack) but is not proven here.
+
 ---
 
 ## Key references
@@ -279,4 +309,4 @@ Findings from the ZTKVR sibling-SDK cross-reference (notes §15).
 - `scripts/arm_disasm.py`, `firmware_analysis.py`, `extract_gpz_assets.py`.
 - Binary: `charmera.bin` (LFS-tracked); `patched/` holds generated images (gitignored).
 
-_Updated: 2026-09-15 (ZTKVR cross-reference + logging infrastructure — §9/notes §15)_
+_Updated: 2026-09-15 (ZTKVR cross-reference + logging infrastructure — §9/notes §15; USB update ruled out at runtime — §10/notes §16)_

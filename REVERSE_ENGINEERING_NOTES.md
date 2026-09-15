@@ -1059,4 +1059,152 @@ lead only; nothing here depends on it. (An earlier claim of a MAME driver for th
 
 ---
 
-*Last updated: 2026-09-15 (ZTKVR sibling-SDK cross-reference + logging infrastructure findings; §15)*
+---
+
+## 16. Is there a USB firmware-update path? No — and why (2026-09-15)
+
+Question asked: does the ZTKVR SDK (`ZTKVR/`, the sibling codebase) contain any way to
+update firmware **over USB**? Answer: **no runtime path**; USB is mass-storage + UVC only.
+Below is the evidence, including the reasoning method and its limits.
+
+### 16.1 What the runtime USB stack is
+
+- `ZTKVR/application/task_usb/src/ap_usb.c:114` `usb_msdc_state_initial()` exposes exactly
+  one LUN. With `MINI_DVR_STORAGE_TYPE == T_FLASH`
+  (`ZTKVR/project/326B_CVR/inc/customer.h:105`) it registers `LUNTYPE_SDCMMC` → `FS_SD`.
+  So the MSC volume is the **SD card**, never the SPI boot flash.
+- `usbdvendor_callback()` (`ap_usb.c:498`) is the vendor SCSI hook. Its command set is
+  read-only/informational: `0xF000`, `0xF001` get-lun, `0xF010` read IC info, `0xF0F0` set
+  vendor ID, `0xF0FF` set clock. Every command must carry a `'G','P'` signature
+  (`ap_usb.c:503`) or it fails with sense `0x27`, behind a `ConfirmPass` gate with a
+  `0xFFEE` backdoor. No branch reaches a flash write.
+
+### 16.2 The static-linkage argument (and how it was checked)
+
+The claim "the USB libraries cannot reach the flash driver" is a linkage argument: for
+USB code to program flash, *some* object it links against must reference the flash API.
+Checked mechanically, not by reading:
+
+1. **Symbol references.** Dump undefined (`U`) symbols of every USB archive. Then look for
+   flash-API names specifically: `SPI_Flash_write_page`, `SPI_Flash_erase_block`,
+   `SPI_Flash_write`, `n_page`, `n_block`, `n_sector`, `nor_write`, `nvram_write`,
+   `flash_write`. **Zero matches**, across all seven archives:
+   `drv_l1_usbH20.a`, `drv_l1_usbH20_UVC.a`, `drv_l1_usbd20.a`, `drv_l1_usbd20_cam.a`,
+   `drv_l2_usb_host20.a`, `drv_l2_usb_host20_UVC.a`, `drv_l1_msc.a`.
+2. **Raw byte scan, not just symbols.** `grep`/`nm` only prove what the *linker* sees. A
+   determined driver could also poke the flash controller's MMIO directly. So I scanned
+   each archive's raw bytes for every 4-byte little-endian word inside the real SPI
+   controller windows — `SPI0_BASE 0xC0080000` and `SPI1_BASE 0xC0090000`/`0xC0150000`
+   (`ZTKVR/driver_l1/inc/drv_l1_sfr.h:463,466,468`). **Zero matches** in all seven.
+   (First attempt scanned `0xD0200060`, which is only a commented-out line in
+   `drv_l2_spi_flash.c:546`; the `0xD02xxxxx` words that *do* appear in the archives are
+   ARM instruction encodings — e.g. `0xE59D2xxx`-family literals — not register pokes.)
+3. **Who actually owns the flash API.** `SPI_Flash_write_page` / `SPI_Flash_erase_block`
+   are defined in `ZTKVR/driver_l2/spi_flash/src/drv_l2_spi_flash.c` and declared in
+   `driver_l2/spi_flash/inc/drv_l2_spi_flash.h` + `driver_l2/inc/driver_l2.h`. Byte-level
+   scan of the whole SDK finds only **three** callers: `gplib/storages/src/nvram.c`,
+   `application/task_state_handling/src/ap_state_firmware_upgrade.c`, and the driver
+   itself. `application/task_usb/` contains **no** reference to `SPI_Flash*`, `n_page`,
+   `n_block`, `n_sector`, or `nvram`.
+
+### 16.3 Correction — the vendor dispatch table is not where I first said
+
+Worth recording because I initially misattributed it. `Cmd_GPVendorCmdMP` and
+`Cmd_GPVendorCmdIMG` are **defined** in the vendor object (`drv_l1_ums_vendor.o`, inside
+`liba/drv_l1_usbd20.a`), but the **table that dispatches to them lives in a different
+object**: `drv_l1_umsdc.o`. Its `.constdata` is a 21-entry, 8-byte-stride
+`(opcode, handler)` table:
+
+| table+0x | SCSI opcode | handler |
+|---|---|---|
+| `0x50` | `0xA8` | `Cmd_Read` |
+| `0x58` | `0xAA` | `Cmd_Write` |
+| `0x60` | `0x2A` | `Cmd_Write` |
+| `0x68` | `0x2F` | `Cmd_Verify` |
+| `0x70` | `0x43` | `Cmd_ReadTOC` |
+| `0x78` | `0x5A` | `Cmd_ModeSense10` |
+| `0x80` | `0xF0` | `Cmd_GPVendorCmdMP` |
+| `0x88` | `0xF3` | `Cmd_GPVendorCmdIMG` |
+| `0x90` | `0xF0` | `SetVenderID` |
+| `0x98` | `0x10` | `GetICVersion` |
+| `0xA0` | `0xFF` | `SetSystime` |
+
+The lookup in `SCSI_Command` (`drv_l1_umsdc.o` @ `0x190`) is a linear scan comparing the
+CBW opcode at `+0x0F` against each key, defaulting to sense `0x1A` on miss. Two things
+follow: (a) the MP/IMG handlers are reachable from ordinary SCSI CBWs, not only from
+production-tool mode — but (b) they still cannot program flash, because the vendor object's
+own undefined-symbol list contains no flash reference (step 1 above), and anything they
+*can* do — `RegWrite` (`drv_l1_ums_vendor.o` @ `0xD8`) is a bulk register poke driven by
+host-supplied values — is bounded by the SDK's own gating, not a flash primitive.
+
+### 16.4 What the MP/IMG handlers can actually do
+
+Defined in `drv_l1_ums_vendor.o`: `JDataWrite`, `RegWrite`, `RegRead`, `GetDL_length`,
+`SetVenderID`, `GetDriveStatus`, `GetICVersion`, `GetLcdResoultion`, `GetLcdpanel`,
+`GetSendFileFromHost`. The last is the most interesting and the closest thing to an
+upload path: it allocates a heap buffer, pulls data from the host via
+`Receive_From_USB_DMA_USB`, `memcpy`s it, and returns it — i.e. it stages **host bytes into
+RAM**, and its own undefined symbols are `gp_malloc`, `gp_free`, `__rt_memcpy`,
+`__rt_memset`, `Receive_From_USB_DMA_USB`, `Send_To_USB_DMA_USB`, `GetCMDValueEx`,
+`print_string`, `USB_CheckRegister_Complete`. RAM staging, no flash sink.
+
+### 16.5 The two real firmware-update paths (both SD-card, both I2C/direct)
+
+- **Main firmware (this SoC's SPI flash).** `ap_state_firmware_upgrade.c:38` opens
+  `C:\ztkvr_upgrade.bin`; writes via `SPI_Flash_write_page` at `:106`; gated by a flag set
+  at `ap_storage_service.c:998`, keyed on the file existing at mount.
+- **Sensor firmware (ZealTek ZT3120/ZT3150).** `project/326B_CVR/zt31xx/zt31xx.c:693`
+  `zt31xx_fw_update()` reads `C:\zt3150_upgrade.bin` or `C:\zt3120_upgrade.bin` and pushes
+  it over **I2C** via `zt31xx_spi_write()` (`:501`), using mailbox registers
+  `0x0080`–`0x0083` at SCCB ID `0x04`. (Name is misleading — `_spi_write` here is the
+  sensor's own mailbox protocol, not this SoC's flash controller.) Called from
+  `driver_l1/common/src/drv_l1_sensor.c:8894`. Git history commit `a970a1f`
+  ("verify zt31xx firmware update function - ok").
+
+### 16.6 Where USB flashing *does* exist — factory tooling, not runtime
+
+USB-based programming exists only as production/ISP tooling, and it works by a different
+mechanism: push a stub into **RAM** over USB, jump to it, and let *that* stub erase/program
+flash ("IspBin" = in-system-programming binary).
+
+- `ZTKVR/tool/G+CodePacker 1.0.9.27/USBMassProductionTool/conf/NewAutoDownLoadSPI.conf` —
+  the sequence is explicit: `Step 2` writes `Code/gpl326xxb_spiusbbin.hdb` to RAM at
+  `0x20000000` (`ChipType=3` = RAM), `Step 3` is `ActionType=3` (jump to function) at the
+  same address, then Steps 4–5 erase/program `ChipType=6` (SPI NOR Flash).
+- Stub payloads: `Code/GPL326XXB_SpiUsbBin.hdb`, `..._NandUsbBin.hdb`, `..._SdcUsbBin.hdb`.
+  Verified that the SPI stub carries real NOR opcodes — `0x02` page program, `0x20` sector
+  erase, `0xD8` block erase, `0x06` WREN, `0x05` RDSR, `0xC7` chip erase — i.e. **the flash
+  programming lives in the uploaded stub**, which is why the resident USB driver needs no
+  flash symbols at all. That is the reconciliation of §16.2 with reality.
+- Host side: `msi_extract/cab/GPDevFWUpdater.dll` — `C_GPDevFWUpdateDrvUSBWriter`,
+  `...MSDCROMCode`, `...HidBridgeDevice*`, `Start DownloadFirmware`. Also
+  `G+MassProductionTool.exe` + `StepDll/WriteStep.dll`, `EraseStep.dll`,
+  `VendorCommand.dll`.
+- Per `TODO.md` §9 and notes §15.4 this is the ISP/ROM-download route, and it depends on
+  the boot ROM entering download mode — **untested** as a recovery path for the bricked
+  unit (see §4). Whether ROM download mode engages with a damaged image is the open
+  question, not whether the tooling exists.
+
+### 16.7 Scope limits of this finding
+
+- Evidence is from **ZTKVR** (sibling die, `GP3268xxB_CVR`), not from `charmera.bin`
+  (`GPCV1235F`). §15.1 already cautions that peripheral/pin assumptions do not carry over.
+  The *structural* claim (no flash symbols in the USB layer) is likely to hold, since both
+  come from the same vendor USB stack, but it is not proven for this image.
+- Corroboration in `charmera.bin`: it contains the same MSDC product strings
+  `"GENPLUS USB-MSDC DISK A 1.00GP-PROD."` @ `0xF3CE4` and the CDRM twin @ `0xF3D10`,
+  matching the SDK's descriptor style, and `"*.bin"` as its only upgrade-ish filename
+  string. A scan for SDK-style `0xF0xxxxxx` vendor opcode words in this image found no
+  `(opcode, handler)` table of that shape — consistent with the vendor hooks being compiled
+  out here. Treat as corroborating, not conclusive.
+
+### 16.8 Bottom line
+
+For the question "can firmware be updated over USB": **not from running firmware.** The USB
+stack here cannot program flash (no symbols, no MMIO pokes), the MSC LUN is the SD card,
+and the vendor command channel is read-only. USB flash programming exists only as
+factory ISP tooling, which uploads a RAM stub that does the erasing and programming itself.
+
+---
+
+*Last updated: 2026-09-15 (USB firmware-update question answered: no runtime USB path — §16; plus sibling-SDK cross-reference — §15)*
