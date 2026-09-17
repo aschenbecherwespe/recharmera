@@ -276,8 +276,10 @@ program a corrupted header region into flash.
     `standalone_0180000_large_jpg_180000.jpg` @`0x180000` is **not** a UI asset but a stored
     960×720 **photo** — see §9)
 - `assets/` is deliberately **not tracked in git** — it is vendor UI asset data (artwork/audio)
-  we do not hold the rights to redistribute. Regenerate it locally with
-  `scripts/extract_gpz_assets.py charmera.bin`.
+  we do not hold the rights to redistribute. It lives only in the local working copy.
+  `scripts/extract_gpz_assets.py` is an *approximate* extractor (it scans for GPZP/JPEG/WAV
+  magic rather than walking the name table's offsets), so it does **not** reproduce these
+  files byte-for-byte — treat the on-disk `assets/` as the reference copy.
 - G+ IDE (564 MB MSI / zip present in folder) extracted to `msi_extract/`:
   - `GPDevFWUpdater.dll` — USB ISP/MSDC production flasher (NOT the SD format)
   - `GImagePreviewer.exe` — GPZP image previewer/encoder (unformatted image support)
