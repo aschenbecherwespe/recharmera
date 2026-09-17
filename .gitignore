@@ -1,0 +1,46 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Huge vendor installers / extracted contents (re-derivable, never commit)
+G+ IDE for ARM V1.2.1.msi
+G+_IDE_for_ARM_V1.2.1.zip
+msi_extract/
+
+# Generated upgrade candidate files (regenerate via scripts/build_upgrade_files.py)
+JH_5408*.bin
+JH5408_v*.bin
+v?_*.bin
+
+# Carved JPEG output (regenerate via scripts/carve_jpegs.py)
+carved/
+carved_*/
+
+# Patched firmware images (regenerate via scripts/patch_boot_mode.py)
+patched/
+
+# Project noise files (empty dev placeholders)
+*.gpr
+*.rep/
+
+# maybe a sdk reference https://github.com/wythe-lin/ZTKVR
+ZTKVR/
+
+# Vendor UI asset data carved out of the dump — third-party artwork/audio we do not hold the
+# rights to redistribute. Kept locally only; scripts/extract_gpz_assets.py is an approximate
+# extractor (magic-signature scan), so it cannot rebuild these files byte-for-byte.
+assets/
+
+# Local-only brick post-mortem evidence (see TODO.md, "Hardware run #2")
+broken_flash_dump.bin

@@ -1,0 +1,2 @@
+# Route large/valuable binaries through Git LFS (local-only tracking)
+*.bin filter=lfs diff=lfs merge=lfs -text
