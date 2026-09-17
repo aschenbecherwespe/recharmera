@@ -13,7 +13,7 @@
 | CPU | **ARM** (32-bit A32) | reset vector `0x200`: `ldr pc,[pc,#0x18]`; `0x23c: e32ff0d3` = `MSR CPSR_c,#0xD3` |
 | OS | Bare-metal proprietary RTOS (MicroC) + lwIP 1.4.0 | strings `...\MicroC\rtos.c`, `lwip-1.4.0` |
 | Camera model | **WH5408 / JH5408** | strings `JH5408  20250520`, `D.WH5408`; build path `G:\code\2247\5408\v006` |
-| WiFi | SSV6158/SSV6020 (companion chip) | `GPCV1235F_WIFI_SingleCam_SDK`, `ssv6xxx_chip_init` |
+| WiFi (not actually present) | SSV6158/SSV6020 (companion chip) | `GPCV1235F_WIFI_SingleCam_SDK`, `ssv6xxx_chip_init` |
 | Firmware build | `202505201029` | version token in upgrade code |
 | Flash size | **2 MiB (0x200000)** | file size; matches `W25Q16`-class SPI NOR |
 | Flash format | **`SPII`** container | magic at offset 0 (LE: `SPII`) |
@@ -275,6 +275,9 @@ program a corrupted header region into flash.
   - 3 `.jpg` (valid: `AUDIO_REC_BG` @`0x120800`, `POWER_ON_LOGO` @`0x161600` = the Kodak logo;
     `standalone_0180000_large_jpg_180000.jpg` @`0x180000` is **not** a UI asset but a stored
     960×720 **photo** — see §9)
+- `assets/` is deliberately **not tracked in git** — it is vendor UI asset data (artwork/audio)
+  we do not hold the rights to redistribute. Regenerate it locally with
+  `scripts/extract_gpz_assets.py charmera.bin`.
 - G+ IDE (564 MB MSI / zip present in folder) extracted to `msi_extract/`:
   - `GPDevFWUpdater.dll` — USB ISP/MSDC production flasher (NOT the SD format)
   - `GImagePreviewer.exe` — GPZP image previewer/encoder (unformatted image support)

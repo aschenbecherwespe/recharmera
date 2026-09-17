@@ -36,3 +36,10 @@ patched/
 
 # maybe a sdk reference https://github.com/wythe-lin/ZTKVR
 ZTKVR/
+
+# Vendor UI asset data carved out of the dump — third-party artwork/audio we do not hold
+# the rights to redistribute. Regenerate locally with scripts/extract_gpz_assets.py.
+assets/
+
+# Local-only brick post-mortem evidence (see TODO.md, "Hardware run #2")
+broken_flash_dump.bin
