@@ -33,10 +33,10 @@ leaves every later "go back to the menu" post intact (photo/video still post
 0x10D from 0x1d6fc / 0x1c644).
 
 Usage:
-    .venv/bin/python scripts/patch_boot_mode.py [base.bin] [-o OUT.bin] [--mode 0x102]
+    uv run scripts/patch_boot_mode.py [base.bin] [-o OUT.bin] [--mode 0x102]
 Then build + validate the upgrade file:
-    .venv/bin/python scripts/build_upgrade_files.py OUT.bin
-    .venv/bin/python scripts/emu_updater.py --stage both <JH_5408*.bin>
+    uv run scripts/build_upgrade_files.py OUT.bin
+    uv run scripts/emu_updater.py --stage both <JH_5408*.bin>
 """
 import argparse
 import os

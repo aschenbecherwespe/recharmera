@@ -306,12 +306,17 @@ program a corrupted header region into flash.
 ## 7. Python Environment
 
 - Global python was accidentally given `capstone` via `--break-system-packages` during RE; **uninstalled**.
-- Use the project venv (deps declared in `pyproject.toml`: capstone + unicorn):
+- Deps live in `pyproject.toml` (`capstone`, `unicorn`, `pillow`) and are pinned in `uv.lock`.
+  `uv sync` builds `.venv` from the lock, `uv run` executes a script inside it — no manual
+  `python3 -m venv` / `pip install` / activate step:
   ```
-  python3 -m venv .venv
-  uv pip install --python .venv/bin/python capstone unicorn
-  .venv/bin/python scripts/arm_disasm.py charmera.bin 0x21818 0x80 --strings
+  uv sync
+  uv run scripts/arm_disasm.py charmera.bin 0x21818 0x80 --strings
   ```
+- `uv run` re-syncs the env first, so a fresh clone needs only `uv sync` once. Add deps with
+  `uv add <pkg>` (it updates `pyproject.toml` + `uv.lock`); a bare `pip install` desyncs the lock.
+- `pillow` is a runtime dep of `scripts/replace_photo.py`, not a dev extra, so a plain
+  `uv sync` leaves every script runnable.
 - No other global packages were touched.
 
 ---
@@ -335,7 +340,7 @@ flash"), and the display/beep/delay/progress helpers. Everything else executes n
 `uidiv 0xDB808`, the hex parser `0x211FC`, and the gate logic itself.
 
 ```
-.venv/bin/python scripts/emu_updater.py <image.bin> [--name FILENAME] [--trace]
+uv run scripts/emu_updater.py <image.bin> [--name FILENAME] [--trace]
 ```
 `--name` defaults to the canonical name for that image. Observed events: the `check_fn`
 verdict, the version `memcmp`, the parsed expected sum, the sum the camera's own loop
@@ -380,7 +385,7 @@ stubs** (which contain no pixels and must not be mistaken for photos):
 | `0x107448` | header-only | 640×480, 1424 B | as above + the stock SDK EXIF (`Generalplus` / `DSC Turnkey` / `20121115` / `2012:01:21 16:24:08`) |
 
 ```
-.venv/bin/python scripts/carve_jpegs.py charmera.bin carved
+uv run scripts/carve_jpegs.py charmera.bin carved
 # -> carved/*.jpg (complete) and carved/partial/*_header_only.jpg
 ```
 
@@ -453,11 +458,11 @@ from every `stmfd sp!,{…,lr}` prologue, which also follows `add pc,pc,rX,lsl #
 layer:
 
 ```
-.venv/bin/python scripts/find_xrefs.py                 # summary
-.venv/bin/python scripts/find_xrefs.py --callers 0x25868
-.venv/bin/python scripts/find_xrefs.py --refs 0x10fbc5
-.venv/bin/python scripts/find_xrefs.py --disasm 0x14054 --len 0x40
-.venv/bin/python scripts/find_xrefs.py --strings 0x1617c
+uv run scripts/find_xrefs.py                 # summary
+uv run scripts/find_xrefs.py --callers 0x25868
+uv run scripts/find_xrefs.py --refs 0x10fbc5
+uv run scripts/find_xrefs.py --disasm 0x14054 --len 0x40
+uv run scripts/find_xrefs.py --strings 0x1617c
 ```
 
 ### 10.1 Code base (needed to read any of this)
@@ -647,10 +652,10 @@ Rewrites the single literal `0x6714` (`0x10D` → `0x102`); the loader `0x6584` 
 as `0xE59F1188` and the old value must be `0x10D`, so a wrong/patched base is refused.
 
 ```
-.venv/bin/python scripts/patch_boot_mode.py                        # -> patched/charmera_photo.bin
-.venv/bin/python scripts/build_upgrade_files.py patched/charmera_photo.bin
-.venv/bin/python scripts/emu_updater.py --stage both  <JH_5408*.bin>
-.venv/bin/python scripts/emu_updater.py --stage write <JH_5408*.bin>
+uv run scripts/patch_boot_mode.py                        # -> patched/charmera_photo.bin
+uv run scripts/build_upgrade_files.py patched/charmera_photo.bin
+uv run scripts/emu_updater.py --stage both  <JH_5408*.bin>
+uv run scripts/emu_updater.py --stage write <JH_5408*.bin>
 ```
 
 * Updater gates both pass: `check_fn()=1` (UPDATE AVAILABLE) and the byte-sum gate

@@ -23,12 +23,12 @@ covering the RTOS, wifi, updater and app/UI layers.
 
 Usage
 -----
-    .venv/bin/python scripts/find_xrefs.py                  # summary
-    .venv/bin/python scripts/find_xrefs.py --callers 0x14054
-    .venv/bin/python scripts/find_xrefs.py --refs 0x10fbc5
-    .venv/bin/python scripts/find_xrefs.py --disasm 0x1617c [LEN]
-    .venv/bin/python scripts/find_xrefs.py --funcs [--in 0x14000-0x1e000]
-    .venv/bin/python scripts/find_xrefs.py --strings 0x1617c   # literals in a func
+    uv run scripts/find_xrefs.py                  # summary
+    uv run scripts/find_xrefs.py --callers 0x14054
+    uv run scripts/find_xrefs.py --refs 0x10fbc5
+    uv run scripts/find_xrefs.py --disasm 0x1617c [LEN]
+    uv run scripts/find_xrefs.py --funcs [--in 0x14000-0x1e000]
+    uv run scripts/find_xrefs.py --strings 0x1617c   # literals in a func
 
 Options --dump FILE / --base N exist for other dumps; defaults match charmera.bin.
 """
@@ -42,7 +42,7 @@ try:
     from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_LITTLE_ENDIAN
     from capstone.arm import ARM_OP_IMM, ARM_OP_MEM, ARM_REG_PC
 except ImportError:
-    print("pip install capstone  (use the project venv)")
+    print("capstone missing - run: uv sync")
     sys.exit(1)
 
 CONDS = {'eq', 'ne', 'cs', 'hs', 'cc', 'lo', 'mi', 'pl', 'vs', 'vc',

@@ -11,10 +11,10 @@ region is proven safe by both dumps; larger JPEGs are rejected rather than
 encroaching on unverified slot geometry.
 
 Usage:
-    .venv/bin/python scripts/replace_photo.py [base.bin] IMAGE [-o OUT.bin]
+    uv run scripts/replace_photo.py [base.bin] IMAGE [-o OUT.bin]
 Then build + validate the SD upgrade file:
-    .venv/bin/python scripts/build_upgrade_files.py OUT.bin --bump
-    .venv/bin/python scripts/emu_updater.py --stage both <JH_5408*.bin>
+    uv run scripts/build_upgrade_files.py OUT.bin --bump
+    uv run scripts/emu_updater.py --stage both <JH_5408*.bin>
 """
 import argparse
 import os

@@ -32,7 +32,7 @@ Memory map (boot-stub literals at 0x3E0 / 0x408 / 0x410):
     0x02000000 / 0xC0000000 / 0xD0000000  MMIO (scratch-backed here)
 
 Usage
-    .venv/bin/python scripts/emu_updater.py <image.bin> [--name NAME] [--trace]
+    uv run scripts/emu_updater.py <image.bin> [--name NAME] [--trace]
     --name defaults to the canonical name for that image (version 202609101200
     plus its own byte-sum), which is what scripts/build_upgrade_files.py emits.
 """

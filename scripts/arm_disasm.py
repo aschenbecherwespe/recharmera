@@ -2,14 +2,11 @@
 """
 ARM disassembly helper for the GPCV dump (code runs XIP from flash at address 0).
 
-Requires: a venv with capstone installed
-
-    python3 -m venv .venv
-    .venv/bin/pip install capstone
+Requires: the project env (one-off `uv sync`; `uv run` keeps it in step)
 
 Usage:
-    .venv/bin/python scripts/arm_disasm.py charmera.bin 0x21818 0x80
-    .venv/bin/python scripts/arm_disasm.py charmera.bin 0x21370 0x100 --strings
+    uv run scripts/arm_disasm.py charmera.bin 0x21818 0x80
+    uv run scripts/arm_disasm.py charmera.bin 0x21370 0x100 --strings
 """
 import struct
 import sys
@@ -17,7 +14,7 @@ import sys
 try:
     from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_LITTLE_ENDIAN
 except ImportError:
-    print("pip install capstone")
+    print("capstone missing - run: uv sync")
     sys.exit(1)
 
 from capstone.arm import *  # noqa

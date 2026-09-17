@@ -9,10 +9,10 @@ Subcommands:
     seg      <fw.bin> <off> [n] Hex+ascii dump of a region
 
 Usage examples:
-    python3 scripts/firmware_analysis.py entropy charmera.bin | tail -40
-    python3 scripts/firmware_analysis.py strings charmera.bin 'upgrade|JH_|\\.bin'
-    python3 scripts/firmware_analysis.py magic charmera.bin
-    python3 scripts/firmware_analysis.py seg charmera.bin 0x21818 64
+    uv run scripts/firmware_analysis.py entropy charmera.bin | tail -40
+    uv run scripts/firmware_analysis.py strings charmera.bin 'upgrade|JH_|\\.bin'
+    uv run scripts/firmware_analysis.py magic charmera.bin
+    uv run scripts/firmware_analysis.py seg charmera.bin 0x21818 64
 """
 import math, re, struct, sys
 

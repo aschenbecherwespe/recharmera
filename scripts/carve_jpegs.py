@@ -9,7 +9,7 @@ Two classes of hit are reported, and they must not be confused:
                template left in the image, zero pixels
 
 Usage:
-    .venv/bin/python scripts/carve_jpegs.py charmera.bin [outdir]
+    uv run scripts/carve_jpegs.py charmera.bin [outdir]
 
 Default outdir `carved/`; complete files go to `carved/`, header-only stubs to
 `carved/partial/`. Header strings (EXIF Make/Model/DateTime, COM) are printed so a

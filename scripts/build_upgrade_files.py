@@ -30,11 +30,11 @@ which bricks the camera.  Hence images are truncated to
 truncation drops is 0xFF in the stock dump, so nothing is lost.
 
 Usage:
-    python3 scripts/build_upgrade_files.py [dump.bin] [-d DIR] [--version VER12]
-                                           [--clean] [--bump]
+    uv run scripts/build_upgrade_files.py [dump.bin] [-d DIR] [--version VER12]
+                                          [--clean] [--bump]
 Verify with:
-    .venv/bin/python scripts/emu_updater.py --stage write <out.bin>   # write tail
-    .venv/bin/python scripts/emu_updater.py --stage both  <out.bin>   # both gates
+    uv run scripts/emu_updater.py --stage write <out.bin>   # write tail
+    uv run scripts/emu_updater.py --stage both  <out.bin>   # both gates
 """
 import argparse
 import os

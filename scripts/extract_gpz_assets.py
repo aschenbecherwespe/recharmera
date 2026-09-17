@@ -11,7 +11,7 @@ Each asset is stored from its start offset to the next asset's start offset
 (raw, sector-aligned => includes any trailing 0x00/0xFF padding).
 
 Usage:
-    python3 scripts/extract_gpz_assets.py <firmware.bin> [gp+_offset] [outdir]
+    uv run scripts/extract_gpz_assets.py <firmware.bin> [gp+_offset] [outdir]
 Default:                   example.bin                    0x120000      assets/
 """
 import os, re, struct, sys
